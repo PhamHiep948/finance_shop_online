@@ -6,7 +6,7 @@ namespace Fin.Model.Dto.Finance.Responses
         public string Kind { get; set; } = string.Empty;
         public string Date { get; set; } = string.Empty;
         public string Description { get; set; } = string.Empty;
-        public long CategoryId { get; set; }
+        public long? CategoryId { get; set; }
         public decimal Amount { get; set; }
         public decimal TaxPercent { get; set; }
         public decimal AmountAfterTax { get; set; }

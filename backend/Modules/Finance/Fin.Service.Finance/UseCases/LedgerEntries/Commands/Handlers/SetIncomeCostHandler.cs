@@ -91,6 +91,8 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
                 OrderCode = income.OrderCode,
                 Source = EntrySources.LinkedCost,
                 LinkedIncomeId = income.Id,
+                Payee = TextOrNull(payload.Payee),
+                OriginScope = TextOrNull(payload.OriginScope),
                 Details = new LedgerDetails { InvoiceId = InvoiceIdOf(payload) },
             };
             SetPaidAmount(expense, payload);
@@ -106,9 +108,11 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
         private async Task<LedgerEntryResponse> UpdateAsync(LedgerEntryResponse income, LedgerEntry expense, IncomeCostRequest payload, DateOnly date, CancellationToken cancellationToken)
         {
             var before = (await _unitOfWork.LedgerEntryRepository.GetResponseAsync(LedgerKinds.Expense, expense.Id, cancellationToken))!;
-            // Description, category, payee and note may have been edited on the expense page; only the cost fields change here.
+            // Description, category and note may have been edited on the expense page; only the cost fields change here.
             expense.Date = date;
             expense.OrderCode = income.OrderCode;
+            expense.Payee = TextOrNull(payload.Payee);
+            expense.OriginScope = TextOrNull(payload.OriginScope);
             expense.Details.InvoiceId = InvoiceIdOf(payload);
             SetPaidAmount(expense, payload);
             await _unitOfWork.CommitAsync(cancellationToken);
@@ -124,6 +128,8 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
         }
 
         private static string InvoiceIdOf(IncomeCostRequest payload) => payload.InvoiceId?.Trim() ?? string.Empty;
+
+        private static string? TextOrNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
         // The amount typed is what was paid (tax included); the pre-tax part is derived and the paid sum kept exact.
         private static void SetPaidAmount(LedgerEntry expense, IncomeCostRequest payload) =>

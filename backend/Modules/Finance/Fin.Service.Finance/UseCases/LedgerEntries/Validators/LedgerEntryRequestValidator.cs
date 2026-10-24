@@ -18,7 +18,7 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Validators
             RuleFor(x => x.Description)
                 .Must(text => !string.IsNullOrWhiteSpace(text) && text.Length <= FinanceConstants.DescriptionMaxLength)
                 .WithMessage(Message);
-            RuleFor(x => x.CategoryId).GreaterThan(0).WithMessage(Message);
+            RuleFor(x => x.CategoryId).GreaterThan(0).When(x => x.CategoryId is not null).WithMessage(Message);
             RuleFor(x => x.Amount).GreaterThanOrEqualTo(0).WithMessage(Message);
             RuleFor(x => x.TaxPercent).InclusiveBetween(0, 100).WithMessage(Message);
         }

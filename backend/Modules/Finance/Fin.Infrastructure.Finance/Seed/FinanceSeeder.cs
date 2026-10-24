@@ -14,7 +14,6 @@ namespace Fin.Infrastructure.Finance.Seed
         private const string ScopeDomestic = "Nội địa";
         private const string ScopeInternational = "Quốc tế";
 
-        // Order matters: "Bán hàng" must get id 1 because Etsy:DefaultCategoryId points at it.
         private static readonly string[] IncomeCategories = ["Bán hàng", "Thu khác"];
 
         private static readonly string[] ExpenseCategories =

@@ -32,8 +32,8 @@ namespace Fin.Infrastructure.Finance.Repositories
                     .Select(g => new { Key = g.Key, Count = g.LongCount() })
                     .ToDictionaryAsync(x => x.Key, x => x.Count, cancellationToken)
                 : (await _dbContext.LedgerEntries.AsNoTracking()
-                    .Where(x => x.DeletedAt == null)
-                    .GroupBy(x => x.CategoryId)
+                    .Where(x => x.DeletedAt == null && x.CategoryId != null)
+                    .GroupBy(x => x.CategoryId!.Value)
                     .Select(g => new { Key = g.Key, Count = g.LongCount() })
                     .ToListAsync(cancellationToken))
                     .ToDictionary(x => x.Key.ToString(CultureInfo.InvariantCulture), x => x.Count);
@@ -74,14 +74,6 @@ namespace Fin.Infrastructure.Finance.Repositories
                 .FirstOrDefaultAsync(cancellationToken);
         }
 
-        public async Task<long?> FirstIdAsync(string kind, CancellationToken cancellationToken)
-        {
-            return await _dbContext.Categories
-                .Where(x => x.Kind == kind)
-                .OrderBy(x => x.Id)
-                .Select(x => (long?)x.Id)
-                .FirstOrDefaultAsync(cancellationToken);
-        }
 
         public async Task<int> CountEntriesAsync(long id, string kind, bool deleted, CancellationToken cancellationToken)
         {

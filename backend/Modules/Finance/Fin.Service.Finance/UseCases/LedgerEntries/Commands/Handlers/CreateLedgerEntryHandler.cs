@@ -25,7 +25,10 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
         public async Task<Response<LedgerEntryResponse>> Handle(CreateLedgerEntryCommand request, CancellationToken cancellationToken)
         {
             var payload = request.Payload;
-            if (!await _unitOfWork.CategoryRepository.ExistsAsync(payload.CategoryId, request.Kind, cancellationToken))
+            // Only an income may be left without a product group; an expense always needs its category.
+            if (payload.CategoryId is not { } categoryId
+                    ? request.Kind != LedgerKinds.Income
+                    : !await _unitOfWork.CategoryRepository.ExistsAsync(categoryId, request.Kind, cancellationToken))
             {
                 return Response<LedgerEntryResponse>.Fail(ErrorCodeEnum.CAT_ERR_005);
             }

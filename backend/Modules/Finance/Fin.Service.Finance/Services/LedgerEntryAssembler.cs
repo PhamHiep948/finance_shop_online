@@ -34,7 +34,10 @@ namespace Fin.Service.Finance.Services
                 Note = request.Note,
                 InvoiceId = request.InvoiceId,
             };
-            entry.SetAmounts(request.Amount, request.TaxPercent);
+            // Amount and tax unchanged (only other fields edited): keep the stored after-tax figure, which may be an
+            // exact paid / received amount; recomputing it from the rounded pre-tax amount could shift it by a cent.
+            var keepAfterTax = entry.Amount == request.Amount && entry.TaxPercent == request.TaxPercent ? entry.AmountAfterTax : (decimal?)null;
+            entry.SetAmounts(request.Amount, request.TaxPercent, keepAfterTax);
         }
     }
 }

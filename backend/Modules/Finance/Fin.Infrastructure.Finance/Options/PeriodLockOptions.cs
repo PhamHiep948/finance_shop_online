@@ -4,7 +4,8 @@ namespace Fin.Infrastructure.Finance.Options
     {
         public const string SectionName = "PeriodLock";
 
-        public bool Enabled { get; set; } = true;
+        // Off by default: entries of any past month, quarter or year stay editable.
+        public bool Enabled { get; set; }
         public string Period { get; set; } = "Quarter";
         public int GraceDays { get; set; } = 1;
     }

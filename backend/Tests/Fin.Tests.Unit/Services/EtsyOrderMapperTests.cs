@@ -45,6 +45,28 @@ namespace Fin.Tests.Unit.Services
         }
 
         [Fact]
+        public void Eur_subtotal_and_shipping_are_converted_together_and_rounded_once()
+        {
+            var rates = new Dictionary<string, decimal> { ["2026-08"] = 1.01m };
+
+            var order = EtsyOrderMapper.Map(Receipt("EUR", "US", 0.5m, 0.5m), rates, 19m);
+
+            // 1.00 EUR × 1.01 = 1.01 USD (rounding 0.505 + 0.505 separately would give 1.02).
+            Assert.Equal(1.01m, order.Amount);
+        }
+
+        [Fact]
+        public void Non_eu_after_tax_is_amount_plus_collected_tax_not_recomputed_from_rounded_percent()
+        {
+            var order = EtsyOrderMapper.Map(Receipt("USD", "US", 123.45m, 0m, tax: 10.13m), new Dictionary<string, decimal>(), 19m);
+
+            Assert.Equal(8.21m, order.TaxPercent);
+            // 123.45 × 1.0821 = 133.59 would be one cent off the money actually received.
+            Assert.Equal(133.58m, order.AmountAfterTax);
+            Assert.Equal(10.13m, order.Tax);
+        }
+
+        [Fact]
         public void Eur_order_without_monthly_rate_falls_back_to_one()
         {
             var order = EtsyOrderMapper.Map(Receipt("EUR", "US", 10m, 0m), new Dictionary<string, decimal>(), 19m);

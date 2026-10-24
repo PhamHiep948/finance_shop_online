@@ -24,7 +24,10 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
         public async Task<Response<LedgerEntryResponse>> Handle(UpdateLedgerEntryCommand request, CancellationToken cancellationToken)
         {
             var payload = request.Payload;
-            if (!await _unitOfWork.CategoryRepository.ExistsAsync(payload.CategoryId, request.Kind, cancellationToken))
+            // Only an income may be left without a product group; an expense always needs its category.
+            if (payload.CategoryId is not { } categoryId
+                    ? request.Kind != LedgerKinds.Income
+                    : !await _unitOfWork.CategoryRepository.ExistsAsync(categoryId, request.Kind, cancellationToken))
             {
                 return Response<LedgerEntryResponse>.Fail(ErrorCodeEnum.CAT_ERR_005);
             }
@@ -34,10 +37,6 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
             {
                 return Response<LedgerEntryResponse>.Fail(ErrorCodeEnum.LED_ERR_001);
             }
-            if (entry.IsFromEtsy)
-            {
-                return Response<LedgerEntryResponse>.Fail(ErrorCodeEnum.LED_ERR_002);
-            }
             // Neither an entry of a locked period may change, nor may an entry be moved into a locked period.
             if ((_periodLock.Check(entry.Date) ?? _periodLock.Check(payload.Date)) is { } locked)
             {
@@ -45,8 +44,24 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
             }
 
             var before = (await _unitOfWork.LedgerEntryRepository.GetResponseAsync(request.Kind, entry.Id, cancellationToken))!;
+            // An Etsy order is source data: only its product group, which Etsy does not provide, may be set by hand.
+            // The monthly Etsy ad spend may be corrected like a manual expense, but keeps its code and channel so the
+            // month is still known as imported and never comes in twice.
             // Source and the link to an income are not part of the form, so they stay untouched here.
-            LedgerEntryAssembler.Apply(entry, payload);
+            if (entry.IsEtsyAds)
+            {
+                var (orderCode, salesChannel) = (entry.OrderCode, entry.SalesChannel);
+                LedgerEntryAssembler.Apply(entry, payload);
+                (entry.OrderCode, entry.SalesChannel) = (orderCode, salesChannel);
+            }
+            else if (entry.IsFromEtsy)
+            {
+                entry.CategoryId = payload.CategoryId;
+            }
+            else
+            {
+                LedgerEntryAssembler.Apply(entry, payload);
+            }
 
             var after = await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {

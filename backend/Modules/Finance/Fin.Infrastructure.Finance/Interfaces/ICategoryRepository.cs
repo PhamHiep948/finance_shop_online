@@ -15,7 +15,6 @@ namespace Fin.Infrastructure.Finance.Interfaces
 
         Task<long?> FindIdByNameAsync(string kind, string name, CancellationToken cancellationToken);
 
-        Task<long?> FirstIdAsync(string kind, CancellationToken cancellationToken);
 
         Task<int> CountEntriesAsync(long id, string kind, bool deleted, CancellationToken cancellationToken);
 

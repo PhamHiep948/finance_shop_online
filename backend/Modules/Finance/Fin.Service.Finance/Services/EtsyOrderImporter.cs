@@ -3,11 +3,8 @@ using Fin.Domain.Finance.Constants;
 using Fin.Domain.Finance.Entities;
 using Fin.Infrastructure.Finance.Interfaces;
 using Fin.Infrastructure.Finance.Mappers;
-using Fin.Infrastructure.Finance.Options;
-using Fin.Infrastructure.Shared.Exceptions;
 using Fin.Model.Dto.Finance.Responses;
 using Fin.Service.Finance.Constants;
-using Microsoft.Extensions.Options;
 
 namespace Fin.Service.Finance.Services
 {
@@ -15,13 +12,11 @@ namespace Fin.Service.Finance.Services
     {
         private readonly IFinanceUnitOfWork _unitOfWork;
         private readonly AuditTrail _auditTrail;
-        private readonly IOptionsMonitor<EtsyOptions> _options;
 
-        public EtsyOrderImporter(IFinanceUnitOfWork unitOfWork, AuditTrail auditTrail, IOptionsMonitor<EtsyOptions> options)
+        public EtsyOrderImporter(IFinanceUnitOfWork unitOfWork, AuditTrail auditTrail)
         {
             _unitOfWork = unitOfWork;
             _auditTrail = auditTrail;
-            _options = options;
         }
 
         public async Task<EtsyImportResponse> ImportAsync(IReadOnlyCollection<EtsyOrderDto> orders, string auditNote, CancellationToken cancellationToken)
@@ -31,7 +26,6 @@ namespace Fin.Service.Finance.Services
                 return new EtsyImportResponse(0, 0);
             }
 
-            var categoryId = await ResolveCategoryAsync(cancellationToken);
             var existing = await _unitOfWork.LedgerEntryRepository.GetExistingOrderCodesAsync(
                 SalesValues.ChannelEtsy, orders.Select(o => o.ReceiptId).ToList(), cancellationToken);
             var fresh = orders
@@ -47,7 +41,7 @@ namespace Fin.Service.Finance.Services
             // period: that is how the orders of a past month or quarter get filled in.
             await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
-                var entries = fresh.Select(o => ToEntry(o, categoryId)).ToList();
+                var entries = fresh.Select(ToEntry).ToList();
                 entries.ForEach(_unitOfWork.LedgerEntryRepository.Add);
                 await _unitOfWork.CommitAsync(cancellationToken);
                 foreach (var entry in entries)
@@ -61,23 +55,12 @@ namespace Fin.Service.Finance.Services
             return new EtsyImportResponse(fresh.Count, orders.Count - fresh.Count);
         }
 
-        private async Task<long> ResolveCategoryAsync(CancellationToken cancellationToken)
-        {
-            var preferred = _options.CurrentValue.DefaultCategoryId;
-            if (await _unitOfWork.CategoryRepository.ExistsAsync(preferred, CategoryKinds.Income, cancellationToken))
-            {
-                return preferred;
-            }
-            return await _unitOfWork.CategoryRepository.FirstIdAsync(CategoryKinds.Income, cancellationToken)
-                ?? throw new ApiException("Chưa có loại thu nào để gán cho đơn Etsy.");
-        }
-
         private static bool IsUsable(EtsyOrderDto order) =>
             DateOnly.TryParseExact(order.Date, FinanceConstants.IsoDateFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out _)
             && !string.IsNullOrWhiteSpace(order.Description)
             && order.Amount >= 0;
 
-        private static LedgerEntry ToEntry(EtsyOrderDto order, long categoryId)
+        private static LedgerEntry ToEntry(EtsyOrderDto order)
         {
             var description = order.Description.Trim();
             var entry = new LedgerEntry
@@ -85,7 +68,8 @@ namespace Fin.Service.Finance.Services
                 Kind = LedgerKinds.Income,
                 Date = DateOnly.ParseExact(order.Date, FinanceConstants.IsoDateFormat, CultureInfo.InvariantCulture),
                 Description = description.Length > FinanceConstants.DescriptionMaxLength ? description[..FinanceConstants.DescriptionMaxLength] : description,
-                CategoryId = categoryId,
+                // Etsy has no product group: it starts empty and is filled in by hand.
+                CategoryId = null,
                 OrderCode = order.ReceiptId,
                 SaleRegion = order.SaleRegion,
                 SalesChannel = SalesValues.ChannelEtsy,
