@@ -21,8 +21,21 @@ namespace Fin.Service.Finance.UseCases.ExchangeRates.Queries.Handlers
 
         public async Task<Response<FxCurrentResponse>> Handle(GetCurrentRateQuery request, CancellationToken cancellationToken)
         {
-            // A rate typed for the current month wins over the ECB reference rate.
-            var month = MonthKey.Of(DateOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime));
+            // A rate typed for today, then for the current month, wins over the ECB reference rate.
+            var today = DateOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime);
+            var todayRate = await _unitOfWork.FxDailyRateRepository.GetAsync(today, cancellationToken);
+            if (todayRate is { EurToUsd: > 0 })
+            {
+                return Response<FxCurrentResponse>.Ok(new FxCurrentResponse
+                {
+                    EurToUsd = todayRate.EurToUsd,
+                    UsdToEur = decimal.Round(1 / todayRate.EurToUsd, 6),
+                    Date = today.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+                    Auto = false,
+                    Manual = true,
+                });
+            }
+            var month = MonthKey.Of(today);
             var manual = await _unitOfWork.FxMonthlyRateRepository.GetAsync(month, cancellationToken);
             if (manual is { EurToUsd: > 0 })
             {

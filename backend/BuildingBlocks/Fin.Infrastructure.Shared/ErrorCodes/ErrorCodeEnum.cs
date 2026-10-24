@@ -63,6 +63,10 @@ namespace Fin.Infrastructure.Shared.ErrorCodes
         FX_ERR_002,
         [Description("Không tìm thấy tỷ giá của tháng này.")]
         FX_ERR_003,
+        [Description("Ngày phải có dạng yyyy-MM-dd.")]
+        FX_ERR_004,
+        [Description("Không tìm thấy tỷ giá của ngày này.")]
+        FX_ERR_005,
         #endregion
 
         #region Etsy

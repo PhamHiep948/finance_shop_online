@@ -45,6 +45,7 @@ Bộ chuyển đổi đọc được cả dữ liệu cũ (số lưu dạng chu�
 | `Attachment` | `attachments` | `EntryId`, `OriginalName`, `StoredName` (tên file ngẫu nhiên), `ContentType`, `SizeBytes` |
 | `AuditLog` | `audit_logs` | `EntityType`, `EntityId`, `Action`, `Label`, `Detail`, `Changes` (JSON `{trường: {from, to}}`) |
 | `FxMonthlyRate` | `fx_monthly` | `Month` (`yyyy-MM`, khóa chính), `EurToUsd` (0,5 – 3) |
+| `FxDailyRate` | `fx_daily` | `Date` (khóa chính), `EurToUsd` (0,5 – 3); ngày có dòng này quy đổi theo nó thay cho tỷ giá tháng |
 | `CategoryGroup` | `category_groups` | `Name` (duy nhất), `CategoryIds` (lưu dạng `1,2,3`) |
 
 ## Quan hệ

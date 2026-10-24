@@ -59,6 +59,15 @@ namespace Fin.Infrastructure.Finance.External
             }
         }
 
+        public async Task<Dictionary<DateOnly, decimal>> GetDailyAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
+        {
+            await LoadDailyAsync(from, to, cancellationToken);
+            lock (_daily)
+            {
+                return _daily.Where(p => p.Key >= from && p.Key <= to).ToDictionary(p => p.Key, p => p.Value);
+            }
+        }
+
         private async Task<EcbRate> GetLatestUnlockedAsync(CancellationToken cancellationToken)
         {
             var now = _timeProvider.GetUtcNow().UtcDateTime;

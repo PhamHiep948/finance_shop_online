@@ -28,5 +28,20 @@ namespace Fin.Presentation.Finance.Controllers.v1
         [HttpDelete("monthly/{month}")]
         public async Task<IActionResult> DeleteMonthlyAsync(string month) =>
             Ok(await Mediator.Send(new DeleteMonthlyRateCommand { Month = month }));
+
+        [HttpGet("daily")]
+        public async Task<IActionResult> GetDailyAsync() => Ok(await Mediator.Send(new GetDailyRatesQuery()));
+
+        [HttpGet("days")]
+        public async Task<IActionResult> GetDayTableAsync([FromQuery] string? month) =>
+            Ok(await Mediator.Send(new GetDayTableQuery { Month = month }));
+
+        [HttpPut("daily/{date}")]
+        public async Task<IActionResult> SetDailyAsync(string date, FxMonthlyRequest request) =>
+            Ok(await Mediator.Send(new SetDailyRateCommand { Date = date, EurToUsd = request.EurToUsd }));
+
+        [HttpDelete("daily/{date}")]
+        public async Task<IActionResult> DeleteDailyAsync(string date) =>
+            Ok(await Mediator.Send(new DeleteDailyRateCommand { Date = date }));
     }
 }

@@ -61,6 +61,11 @@ erDiagram
         decimal eur_to_usd
         datetime updated_at
     }
+    fx_daily {
+        date date PK "thay tỷ giá tháng cho riêng ngày này"
+        decimal eur_to_usd
+        datetime updated_at
+    }
     category_groups {
         bigint_unsigned id PK
         varchar150 name "duy nhất"
