@@ -75,9 +75,9 @@ const TrashPage = {
           <td><input type="checkbox" data-pick="${r.id}"${s.selected.has(r.id) ? " checked" : ""} aria-label="Chọn" /></td>
           <td><span class="trash-kind ${isIncome ? "income" : "expense"}">${isIncome ? "Thu" : "Chi"}</span></td>
           <td>
-            <div class="trash-desc">${esc(r.description)}</div>
+            <div class="trash-desc" translate="no">${esc(r.description)}</div>
             <div class="muted trash-sub">
-              ${esc(isIncome ? r.orderCode || "" : r.payee || "")}
+              <span translate="no">${esc(isIncome ? r.orderCode || "" : r.payee || "")}</span>
               ${r.attachmentCount ? `<span class="cell-attach">${icon("paperclip", 12)}${r.attachmentCount}</span>` : ""}
             </div>
           </td>

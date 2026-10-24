@@ -12,8 +12,8 @@ const AUDIT_FIELDS = {
   name: "Tên loại", date: "Ngày", description: "Nội dung", categoryId: "Loại", amount: "Số tiền trước thuế",
   taxPercent: "% thuế", amountAfterTax: "Sau thuế", orderCode: "Mã đơn", saleRegion: "Khu vực bán",
   salesChannel: "Kênh bán", productQty: "Số lượng", payee: "Bên nhận", originScope: "Phạm vi",
-  paymentMethod: "Phương thức", referenceCode: "Mã tham chiếu", unitPrice: "Đơn giá", itemTotal: "Tiền hàng",
-  discountAmount: "Giảm giá", discountCode: "Mã giảm giá", subtotal: "Tạm tính", shippingAmount: "Vận chuyển",
+  paymentMethod: "Phương thức", referenceCode: "Mã tham chiếu", unitPrice: "Đơn giá", itemTotal: "Giá bán",
+  discountAmount: "Giảm giá", discountCode: "Mã giảm giá", subtotal: "Thành tiền", shippingAmount: "Vận chuyển",
   taxAmount: "Thuế (tiền)", note: "Ghi chú", invoiceId: "ID hóa đơn",
 };
 const AUDIT_MONEY = ["amount", "amountAfterTax", "unitPrice", "itemTotal", "discountAmount", "subtotal", "shippingAmount", "taxAmount"];
@@ -120,7 +120,7 @@ const HistoryPage = {
           <span class="audit-icon tone-${a.tone}">${icon(a.icon, 15)}</span>
           <div class="audit-body">
             <div class="audit-title">
-              <span>${a.text} ${auditEntityText(item)} <b>“${esc(item.label)}”</b></span>
+              <span>${a.text} ${auditEntityText(item)} <b translate="no">“${esc(item.label)}”</b></span>
               <time>${time}</time>
             </div>
             <div class="audit-meta">
@@ -136,8 +136,8 @@ const HistoryPage = {
                   ${changes.map(([field, c]) => `
                     <tr>
                       <td>${esc(AUDIT_FIELDS[field] || field)}</td>
-                      <td class="audit-from">${item.action === "CREATE" ? "" : auditValue(field, c.from)}</td>
-                      <td class="audit-to">${auditValue(field, c.to)}</td>
+                      <td class="audit-from" translate="no">${item.action === "CREATE" ? "" : auditValue(field, c.from)}</td>
+                      <td class="audit-to" translate="no">${auditValue(field, c.to)}</td>
                     </tr>`).join("")}
                 </tbody>
               </table>` : ""}
@@ -158,7 +158,7 @@ const HistoryPage = {
         </section>`).join("");
     }
 
-    const typeOptions = [["", "Tất cả đối tượng"], ["ENTRY", "Khoản thu & chi"], ["INCOME", "Khoản thu"], ["EXPENSE", "Khoản chi"], ["CATEGORY", "Loại thu / chi"]];
+    const typeOptions = [["", "Tất cả đối tượng"], ["ENTRY", "Khoản thu & chi"], ["INCOME", "Khoản thu"], ["EXPENSE", "Khoản chi"], ["CATEGORY", "Nhóm sản phẩm / loại chi"]];
     const actionOptions = [["", "Tất cả thao tác"], ["CREATE", "Thêm mới"], ["UPDATE", "Sửa"], ["DELETE", "Xóa (vào thùng rác)"], ["RESTORE", "Khôi phục"], ["PURGE", "Xóa vĩnh viễn"], ["ATTACH", "Chứng từ"]];
     const hasFilter = s.entityType || s.action || s.from || s.to || s.search || s.entityId;
 

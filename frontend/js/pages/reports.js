@@ -5,7 +5,7 @@ const ReportsPage = {
 
   init() {
     // sel: id các loại thu / loại chi đang chọn (rỗng = tất cả); group: id nhóm đang áp dụng.
-    this.state = { tab: "overview", range: null, kind: "ALL", src: "", sel: [], group: "", pickOpen: false, groupsOpen: false };
+    this.state = { range: null, kind: "ALL", src: "", sel: [], group: "", pickOpen: false, groupsOpen: false };
     // Biểu đồ chỉ chạy hiệu ứng lần đầu vào trang; đổi bộ lọc sau đó vẽ ngay, không nhấp nháy.
     this.calm = false;
   },
@@ -78,7 +78,7 @@ const ReportsPage = {
     return `
       <div class="rpt-pick-panel">
         <div class="rpt-pick-cols">
-          ${s.kind !== "EXPENSE" ? col("INCOME", "Loại thu", INCOME_CATEGORIES) : ""}
+          ${s.kind !== "EXPENSE" ? col("INCOME", "Nhóm sản phẩm", INCOME_CATEGORIES) : ""}
           ${s.kind !== "INCOME" ? col("EXPENSE", "Loại chi", EXPENSE_CATEGORIES) : ""}
         </div>
         <div class="rpt-pick-foot">
@@ -145,7 +145,7 @@ const ReportsPage = {
                   <button type="button" class="btn ghost sm danger-text" data-action="group-del" data-id="${cur.id}">${icon("trash-2", 14)} Xóa nhóm</button>
                 </div>
                 <input class="gm2-search" data-cq placeholder="Tìm loại thu / loại chi…" aria-label="Tìm loại" />
-                ${catSection("INCOME", "Loại thu", INCOME_CATEGORIES)}
+                ${catSection("INCOME", "Nhóm sản phẩm", INCOME_CATEGORIES)}
                 ${catSection("EXPENSE", "Loại chi", EXPENSE_CATEGORIES)}`
                 : '<div class="gm2-empty-detail muted">Nhập tên ở ô bên trái rồi bấm <b>+</b> để tạo nhóm đầu tiên.</div>'}
             </section>
@@ -221,29 +221,19 @@ const ReportsPage = {
       inc = inc.filter((x) => sel.has(x.categoryId));
       exp = exp.filter((x) => sel.has(x.categoryId));
     }
-    const tin = sum(inc);
-    const tex = sum(exp);
-    const profit = tin - tex;
-    const averageIncome = inc.length ? tin / inc.length : 0;
-    const incomeTax = inc.reduce((total, row) => total + (Number(row.taxAmount) || Number(row.amount) * (Number(row.taxPercent) || 0) / 100), 0);
-    const monthly = monthlyFrom(inc, exp);
-
-    const days = {};
-    inc.forEach((x) => { days[x.incomeDate] = days[x.incomeDate] || { d: x.incomeDate, income: 0, expense: 0 }; days[x.incomeDate].income += x.amount; });
-    exp.forEach((x) => { days[x.expenseDate] = days[x.expenseDate] || { d: x.expenseDate, income: 0, expense: 0 }; days[x.expenseDate].expense += x.amount; });
-    const daily = Object.values(days).sort((a, b) => a.d.localeCompare(b.d));
-    const incCats = groupByCat(inc, INCOME_CATEGORIES);
-
     // Dữ liệu dùng cho xuất Excel / PDF (đúng theo bộ lọc đang chọn).
     const kindLabel = { ALL: "Tất cả giao dịch", INCOME: "Chỉ khoản thu", EXPENSE: "Chỉ khoản chi" }[s.kind];
     const group = CATEGORY_GROUPS.find((g) => String(g.id) === String(s.group));
     const selNames = [...INCOME_CATEGORIES, ...EXPENSE_CATEGORIES].filter((c) => sel.has(c.id)).map((c) => c.name);
     const catLabel = group ? `Nhóm: ${group.name}` : selNames.length ? `Loại: ${selNames.join(", ")}` : "";
-    this.report = {
-      from, to, ccy, inc, exp, tin, tex, profit, averageIncome, incomeTax, monthly, daily,
+    this.report = reportData({
+      from, to, ccy, inc, exp,
       filterLabel: [kindLabel, catLabel, s.src ? `Nguồn: ${sourceLabel(s.src)}` : ""].filter(Boolean).join(" · "),
-    };
-    const tabs =[["overview", "Tổng quan"], ["daily", "Theo ngày"], ["monthly", "Theo tháng"], ["in", "Theo loại thu"], ["out", "Theo loại chi"]];
+      filter: { kind: s.kind, group: group?.name || "", cats: group ? [] : selNames, src: s.src || "" },
+    });
+    const { tin, tex, profit, averageIncome, incomeTax, monthly } = this.report;
+    const incCats = groupByCat(inc, INCOME_CATEGORIES);
+    const expCats = groupByCat(exp, EXPENSE_CATEGORIES).sort((a, b) => b.amount - a.amount);
 
     // ---- Thanh bộ lọc: chọn nhanh kỳ + khoảng ngày; bộ lọc chi tiết (ẩn/hiện); các bộ lọc đang áp dụng dạng thẻ.
     const seg = (key, items) => `
@@ -271,7 +261,7 @@ const ReportsPage = {
               </div>
             </div>
             <div class="rpt-ctl rpt-pick-wrap">
-              <span>Loại thu / loại chi</span>
+              <span>Nhóm sản phẩm / loại chi</span>
               <button type="button" class="rpt-pick-btn${sel.size ? " on" : ""}" data-action="pick-toggle" aria-expanded="${s.pickOpen}">
                 <span>${sel.size ? `Đã chọn ${sel.size} loại` : "Tất cả loại"}</span>${icon(s.pickOpen ? "chevron-up" : "chevron-down", 14)}
               </button>
@@ -279,8 +269,7 @@ const ReportsPage = {
             </div>
           </div>
       </div>
-      <div class="underline-tabs rpt-tabs-bar">
-        ${tabs.map(([k, l]) => `<button class="tab ${s.tab === k ? "on" : ""}" type="button" data-action="tab" data-value="${k}">${l}</button>`).join("")}
+      <div class="rpt-tabs-bar">
         <div class="rpt-tabs-actions">
           <button class="btn sm export-btn excel" type="button" data-action="export" data-format="excel" title="Tải báo cáo dạng Excel (.xlsx)">
             ${icon("file-spreadsheet", 15)} <span>Xuất Excel</span>
@@ -291,126 +280,72 @@ const ReportsPage = {
         </div>
       </div>`;
 
-    // ---- Nội dung từng tab
-    let content = "";
-    if (s.tab === "overview") {
-      const kpis = [
-        [`Tổng doanh thu (${ccy})`, money(tin, ccy)],
-        [`Lợi nhuận ròng (${ccy})`, money(profit, ccy)],
-        [`Chi phí vận hành (${ccy})`, money(tex, ccy)],
-        ["Số giao dịch", String(inc.length + exp.length)],
-        [`Doanh thu TB / khoản thu (${ccy})`, money(averageIncome, ccy)],
-        [`Thuế đầu ra ước tính (${ccy})`, money(incomeTax, ccy)],
-      ];
-      const topRows = inc.filter((x) => x.orderCode || x.productQty).sort((a, b) => Number(b.amount) - Number(a.amount)).slice(0, 5);
-      content = `
-        <div class="kpis rpt-kpis">
-          ${kpis.map(([label, value]) => `
-            <article class="card rpt-kpi">
-              <div class="rpt-kpi-label">${esc(label)}</div>
-              <div class="rpt-kpi-value num">${esc(value)}</div>
-            </article>`).join("")}
-        </div>
-        <div class="rpt-split">
-          <article class="card">
-            <div class="card-head">
-              <div><h3 class="section-title">Xu hướng Tài chính</h3><p class="muted">Doanh thu và chi phí theo kỳ đã chọn · ${ccy}</p></div>
-              <div class="legend"><span><i class="dot" style="background: ${CHART_INCOME}"></i>Doanh thu</span><span><i class="dot" style="background: ${CHART_EXPENSE}"></i>Chi phí</span></div>
+    // ---- Nội dung
+    const kpis = [
+      [`Tổng doanh thu (${ccy})`, money(tin, ccy)],
+      [`Lợi nhuận ròng (${ccy})`, money(profit, ccy)],
+      [`Chi phí vận hành (${ccy})`, money(tex, ccy)],
+      ["Số giao dịch", String(inc.length + exp.length)],
+      [`Doanh thu TB / khoản thu (${ccy})`, money(averageIncome, ccy)],
+      [`Thuế đầu ra ước tính (${ccy})`, money(incomeTax, ccy)],
+    ];
+    const topRows = inc.filter((x) => x.orderCode || x.productQty).sort((a, b) => Number(b.amount) - Number(a.amount)).slice(0, 5);
+    const content = `
+      <div class="kpis rpt-kpis">
+        ${kpis.map(([label, value]) => `
+          <article class="card rpt-kpi">
+            <div class="rpt-kpi-label">${esc(label)}</div>
+            <div class="rpt-kpi-value num">${esc(value)}</div>
+          </article>`).join("")}
+      </div>
+      <div class="rpt-split">
+        <article class="card">
+          <div class="card-head">
+            <div><h3 class="section-title">Xu hướng Tài chính</h3><p class="muted">Doanh thu và chi phí theo kỳ đã chọn · ${ccy}</p></div>
+            <div class="legend"><span><i class="dot" style="background: ${CHART_INCOME}"></i>Doanh thu</span><span><i class="dot" style="background: ${CHART_EXPENSE}"></i>Chi phí</span></div>
+          </div>
+          <div class="chart-wrap rpt-trend"><canvas id="rpt-trend"></canvas></div>
+        </article>
+        <article class="card">
+          <h3 class="section-title">Cơ cấu Doanh mục</h3>
+          <p class="muted" style="margin-bottom: 12px">Tỷ trọng doanh thu theo nhóm sản phẩm</p>
+          <div class="donut-row">
+            <div class="chart-donut"><canvas id="rpt-pie"></canvas></div>
+            <div class="donut-legend-side">
+              ${incCats.map((d, i) => `
+                <div><span><i class="swatch" style="background: ${colors[i % colors.length]}"></i>${esc(d.name)}</span><b>${tin ? Math.round((d.amount / tin) * 100) : 0}% · ${esc(money(d.amount, ccy))}</b></div>`).join("")}
             </div>
-            <div class="chart-wrap rpt-trend"><canvas id="rpt-trend"></canvas></div>
-          </article>
-          <article class="card">
-            <h3 class="section-title">Cơ cấu Doanh mục</h3>
-            <p class="muted" style="margin-bottom: 12px">Tỷ trọng doanh thu theo nhóm sản phẩm</p>
-            <div class="donut-row">
-              <div class="chart-donut"><canvas id="rpt-pie"></canvas></div>
-              <div class="donut-legend-side">
-                ${incCats.map((d, i) => `
-                  <div><span><i class="swatch" style="background: ${colors[i % colors.length]}"></i>${esc(d.name)}</span><b>${tin ? Math.round((d.amount / tin) * 100) : 0}% · ${esc(money(d.amount, ccy))}</b></div>`).join("")}
-              </div>
-            </div>
-          </article>
-        </div>
-        <div class="rpt-split">
-          <article class="card" style="padding: 0">
-            <div class="card-head" style="padding: 16px 16px 8px">
-              <div><h3 class="section-title">Sản phẩm Bán chạy</h3><p class="muted">Danh sách các mặt hàng đóng góp doanh thu lớn nhất</p></div>
-            </div>
-            <div class="table-wrap">
-              <table class="rpt-table">
-                <thead><tr><th>Tên sản phẩm</th><th class="amount">SL</th><th class="amount">Doanh thu</th><th>Mã đơn</th></tr></thead>
-                <tbody>
-                  ${topRows.map((p) => `<tr><td>${esc(p.description)}</td><td class="amount muted">${esc(p.productQty || "—")}</td><td class="amount">${esc(money(p.amount, ccy))}</td><td class="amount muted">${esc(p.orderCode || "—")}</td></tr>`).join("")}
-                </tbody>
-              </table>
-            </div>
-          </article>
-          ${fxCardHtml(inc, ccy)}
-        </div>`;
-    } else if (s.tab === "daily" || s.tab === "monthly") {
-      const isDaily = s.tab === "daily";
-      content = `
+          </div>
+        </article>
+      </div>
+      <div class="rpt-split">
         <article class="card" style="padding: 0">
+          <div class="card-head" style="padding: 16px 16px 8px">
+            <div><h3 class="section-title">Sản phẩm Bán chạy</h3><p class="muted">Danh sách các mặt hàng đóng góp doanh thu lớn nhất</p></div>
+          </div>
           <div class="table-wrap">
-            <table>
-              <thead><tr><th>${isDaily ? "Ngày" : "Tháng"}</th><th class="amount">Thu</th><th class="amount">Chi</th><th class="amount">Chênh lệch</th></tr></thead>
+            <table class="rpt-table">
+              <thead><tr><th>Tên sản phẩm</th><th class="amount">SL</th><th class="amount">Doanh thu</th><th>Mã đơn</th></tr></thead>
               <tbody>
-                ${(isDaily ? daily : monthly).map((x) => {
-                  // Quy đổi theo tỷ giá của tháng tương ứng (trang Tỷ giá).
-                  const d = isDaily ? x.d : `${x.key}-01`;
-                  return `
-                  <tr>
-                    <td>${esc(isDaily ? dmy(x.d) : `${x.m}/${x.key.slice(0, 4)}`)}</td>
-                    <td class="amount plus">${esc(money(x.income, ccy, d))}</td>
-                    <td class="amount minus">${esc(money(x.expense, ccy, d))}</td>
-                    <td class="amount">${esc(money(x.income - x.expense, ccy, d))}</td>
-                  </tr>`;
-                }).join("")}
+                ${topRows.map((p) => `<tr><td translate="no">${esc(p.description)}</td><td class="amount muted">${esc(p.productQty || "—")}</td><td class="amount">${esc(money(p.amount, ccy))}</td><td class="amount muted" translate="no">${esc(p.orderCode || "—")}</td></tr>`).join("")}
               </tbody>
             </table>
           </div>
-        </article>`;
-    } else {
-      const isIn = s.tab === "in";
-      const groups = isIn ? incCats : groupByCat(exp, EXPENSE_CATEGORIES);
-      const sorted = [...groups].sort((a, b) => b.amount - a.amount);
-      content = `
-        <div class="grid-2">
-          <article class="card">
-            <h3 class="section-title">${isIn ? "Theo loại thu" : "Theo loại chi"}</h3>
-            <p class="muted" style="font-size: 12px; margin-bottom: 12px">
-              ${isIn ? "Tỷ trọng doanh thu theo danh mục" : "Tỷ trọng chi phí theo danh mục"} · ${ccy}
-            </p>
-            <div class="chart-sm"><canvas id="rpt-cat"></canvas></div>
-          </article>
-          <article class="card cat-detail-card">
-            <div class="cat-detail-head">
-              <h3 class="section-title">Chi tiết danh mục</h3>
-              <span class="cat-detail-count">${sorted.length} danh mục</span>
-            </div>
-            ${sorted.length === 0
-              ? '<div class="empty" style="padding: 32px 0">Không có dữ liệu trong kỳ đã chọn.</div>'
-              : `<div class="cat-detail-list">
-                  ${sorted.map((x, i) => `
-                    <div class="cat-detail-row">
-                      <div class="cat-detail-top">
-                        <div class="cat-detail-label">
-                          <span class="cat-swatch" style="background: ${colors[i % colors.length]}"></span>
-                          <span class="cat-detail-name">${esc(x.name)}</span>
-                        </div>
-                        <div class="cat-detail-right">
-                          <span class="cat-detail-pct">${x.pct}%</span>
-                          <b class="cat-detail-amount num">${esc(money(x.amount, ccy))}</b>
-                        </div>
-                      </div>
-                      <div class="cat-progress-track">
-                        <div class="cat-progress-fill" style="width: ${x.pct}%; background: ${colors[i % colors.length]}"></div>
-                      </div>
-                    </div>`).join("")}
-                </div>`}
-          </article>
-        </div>`;
-    }
+        </article>
+        <article class="card">
+          <h3 class="section-title">Cơ cấu Chi phí</h3>
+          <p class="muted" style="margin-bottom: 12px">Tỷ trọng chi phí theo loại chi · theo bộ lọc đang chọn · ${ccy}</p>
+          ${expCats.length === 0
+            ? '<div class="empty" style="padding: 32px 0">Không có khoản chi trong bộ lọc đang chọn.</div>'
+            : `<div class="donut-row">
+                <div class="chart-donut"><canvas id="rpt-exp-pie"></canvas></div>
+                <div class="donut-legend-side">
+                  ${expCats.map((d, i) => `
+                    <div><span><i class="swatch" style="background: ${colors[i % colors.length]}"></i>${esc(d.name)}</span><b>${tex ? Math.round((d.amount / tex) * 100) : 0}% · ${esc(money(d.amount, ccy))}</b></div>`).join("")}
+                </div>
+              </div>`}
+        </article>
+      </div>`;
 
     // Vẽ lại (sau khi tick loại, đổi tên nhóm…) vẫn giữ chỗ đang cuộn trong cửa sổ nhóm và trên trang.
     const keep = [".gm2-detail", ".gm2-groups"].map((sel) => [sel, root.querySelector(sel)?.scrollTop || 0]);
@@ -454,7 +389,6 @@ const ReportsPage = {
           return;
         }
         if (a === "set") { s[el.dataset.key] = el.dataset.value; if (el.dataset.key === "kind") s.pickOpen = false; }
-        else if (a === "tab") s.tab = el.dataset.value;
         else if (a === "pick-toggle") s.pickOpen = !s.pickOpen;
         else if (a === "pick-close") s.pickOpen = false;
         else if (a === "groups-open") s.groupsOpen = true;
@@ -526,22 +460,19 @@ const ReportsPage = {
         options: { plugins: { legend: { display: false } }, cutout, maintainAspectRatio: false, ...(animate ? {} : { animation: false }) },
       }));
     };
-    if (s.tab === "overview") {
-      const conv = (v) => (ccy === "EUR" ? v * FX_USD_TO_EUR : v);
-      this.charts.push(new Chart(root.querySelector("#rpt-trend"), {
-        type: "line",
-        data: {
-          labels: monthly.length ? monthly.map((x) => x.m) : ["Không có dữ liệu"],
-          datasets: [
-            { label: "Doanh thu", data: monthly.map((x) => conv(x.income)), borderColor: CHART_INCOME, backgroundColor: "rgba(0,113,227,0.12)", fill: true, tension: 0.35, pointRadius: 3, pointBackgroundColor: CHART_INCOME, borderWidth: 2 },
-            { label: "Chi phí", data: monthly.map((x) => conv(x.expense)), borderColor: CHART_EXPENSE, backgroundColor: "transparent", fill: false, tension: 0.35, pointRadius: 3, pointBackgroundColor: CHART_EXPENSE, borderWidth: 2 },
-          ],
-        },
-        options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { color: "#EEF1F4" } }, x: { grid: { display: false } } }, maintainAspectRatio: false, ...(animate ? {} : { animation: false }) },
-      }));
-      doughnut(root.querySelector("#rpt-pie"), incCats, "62%");
-    }
-    if (s.tab === "in") doughnut(root.querySelector("#rpt-cat"), incCats, "70%");
-    if (s.tab === "out") doughnut(root.querySelector("#rpt-cat"), groupByCat(exp, EXPENSE_CATEGORIES), "70%");
+    const conv = (v) => (ccy === "EUR" ? v * FX_USD_TO_EUR : v);
+    this.charts.push(new Chart(root.querySelector("#rpt-trend"), {
+      type: "line",
+      data: {
+        labels: monthly.length ? monthly.map((x) => x.m) : ["Không có dữ liệu"],
+        datasets: [
+          { label: "Doanh thu", data: monthly.map((x) => conv(x.income)), borderColor: CHART_INCOME, backgroundColor: "rgba(0,113,227,0.12)", fill: true, tension: 0.35, pointRadius: 3, pointBackgroundColor: CHART_INCOME, borderWidth: 2 },
+          { label: "Chi phí", data: monthly.map((x) => conv(x.expense)), borderColor: CHART_EXPENSE, backgroundColor: "transparent", fill: false, tension: 0.35, pointRadius: 3, pointBackgroundColor: CHART_EXPENSE, borderWidth: 2 },
+        ],
+      },
+      options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { color: "#EEF1F4" } }, x: { grid: { display: false } } }, maintainAspectRatio: false, ...(animate ? {} : { animation: false }) },
+    }));
+    doughnut(root.querySelector("#rpt-pie"), incCats, "62%");
+    doughnut(root.querySelector("#rpt-exp-pie"), expCats, "62%");
   },
 };

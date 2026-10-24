@@ -128,14 +128,14 @@ const DashboardPage = {
             </div>
             <div class="ds-recent-list">
               ${recentTransactions.map((tx) => `
-                <div class="ds-tx-row" data-action="go" data-to="${tx.targetUrl}" role="button" tabindex="0" title="Bấm để xem chi tiết: ${esc(tx.desc)}">
+                <div class="ds-tx-row" data-action="go" data-to="${tx.targetUrl}" role="button" tabindex="0" title="Bấm để xem chi tiết">
                   <div class="ds-tx-icon-wrap ${tx.type}">
                     ${icon(tx.type === "income" ? "trending-up" : "trending-down", 14)}
                   </div>
                   <div class="ds-tx-main">
-                    <span class="ds-tx-desc">${esc(tx.desc)}</span>
+                    <span class="ds-tx-desc" translate="no">${esc(tx.desc)}</span>
                     <div class="ds-tx-meta">
-                      <span class="ds-tx-code">${esc(tx.code)}</span>
+                      <span class="ds-tx-code" translate="no">${esc(tx.code)}</span>
                       <span class="ds-tx-dot">·</span>
                       <span class="ds-tx-cat">${esc(tx.cat)}</span>
                     </div>
@@ -190,7 +190,7 @@ const DashboardPage = {
                 <li class="ds-sku-item">
                   <span class="ds-sku-rank">${s.rank}</span>
                   <div class="ds-sku-detail">
-                    <span class="ds-sku-name">${esc(s.name)}</span>
+                    <span class="ds-sku-name" translate="no">${esc(s.name)}</span>
                     ${s.code !== "—" ? `<span class="ds-sku-code">${esc(s.code)}</span>` : ""}
                   </div>
                   ${s.qty ? `<span class="ds-sku-qty">${esc(s.qty)} đv</span>` : ""}
@@ -248,7 +248,7 @@ const DashboardPage = {
               ${topSKU.map((s) => `
                 <tr>
                   <td><span class="ds-sku-rank">${s.rank}</span></td>
-                  <td><span style="font-weight: 500">${esc(s.name)}</span></td>
+                  <td><span style="font-weight: 500" translate="no">${esc(s.name)}</span></td>
                   <td><span class="muted">${esc(s.code)}</span></td>
                   <td class="amount">${esc(s.qty ?? "—")}</td>
                   <td class="amount"><strong>${esc(money(s.amount, ccy))}</strong></td>
