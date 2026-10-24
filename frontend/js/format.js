@@ -4,6 +4,8 @@ let FX_USD_TO_EUR = 0.92;
 let FX_DATE = "";
 // Tỷ giá tự nhập theo tháng: { "yyyy-MM": số USD của 1 EUR } (trang Tỷ giá). Tháng chưa nhập dùng FX_USD_TO_EUR.
 let FX_MONTHLY = {};
+// Tỷ giá tự nhập cho riêng một ngày: { "yyyy-MM-dd": số USD của 1 EUR }; ngày có số này không dùng tỷ giá tháng.
+let FX_DAILY = {};
 // Phạm vi khoản chi (sửa được), nhóm loại cho báo cáo: tải từ backend trong reload().
 const SCOPES = [];
 const CATEGORY_GROUPS = [];
@@ -28,19 +30,23 @@ function esc(v) {
 const INCOME_COLS = [
   { id: "order", label: "Mã đơn", def: true },
   { id: "product", label: "Sản phẩm", def: true, lock: true },
-  { id: "category", label: "Loại thu", def: true },
+  { id: "category", label: "Nhóm sản phẩm", def: true },
   { id: "date", label: "Ngày", def: true },
   { id: "region", label: "Khu vực", def: true },
   { id: "qty", label: "SL", def: true },
-  { id: "item", label: "Tiền hàng", def: false },
-  { id: "discount", label: "Giảm giá", def: false },
+  { id: "item", label: "Giá bán", def: true },
+  { id: "discount", label: "Giảm giá", def: true },
+  { id: "subtotal", label: "Thành tiền", def: false },
   { id: "ship", label: "Vận chuyển", def: false },
   { id: "amount", label: "Trước thuế", def: false },
   { id: "taxPercent", label: "% thuế", def: true },
   { id: "tax", label: "Thuế (tiền)", def: false },
   { id: "afterTax", label: "Sau thuế", def: true },
   { id: "fx", label: "Tỷ giá", def: true },
-  { id: "cost", label: "Tiền xưởng / Tiền ship", def: true },
+  { id: "costBefore", label: "Xưởng / Ship trước thuế", def: true },
+  { id: "costTax", label: "Thuế xưởng / ship", def: true },
+  { id: "cost", label: "Xưởng / Ship sau thuế", def: true },
+  { id: "profit", label: "Lợi nhuận", def: true },
   { id: "source", label: "Nguồn", def: true },
 ];
 const EXPENSE_COLS = [
@@ -91,11 +97,46 @@ function saveCols(kind, map, order) {
   if (Array.isArray(order)) localStorage.setItem("fm_col_order_v3_" + kind, JSON.stringify(order));
 }
 
+/**
+ * Làm tròn 2 chữ số, nửa xa số 0 (giống MidpointRounding.AwayFromZero của backend).
+ * Bỏ sai số dấu phẩy động trước khi làm tròn: 1.005 * 100 = 100.49999… phải ra 1.01 chứ không phải 1.00.
+ */
 function round2(n) {
-  return Math.round((Number(n) || 0) * 100) / 100;
+  const v = Number(n) || 0;
+  return (Math.sign(v) * Math.round(Number((Math.abs(v) * 100).toPrecision(12)))) / 100;
 }
 function afterTax(amount, pct) {
-  return Math.round((Number(amount) || 0) * (1 + (Number(pct) || 0) / 100) * 100) / 100;
+  return round2((Number(amount) || 0) * (1 + (Number(pct) || 0) / 100));
+}
+const AUTO_MONEY_TITLE = "Tự tính (không có số từ Etsy / chưa nhập): đơn giá × số lượng, thành tiền + giảm giá";
+/**
+ * Giá bán (tổng giá sản phẩm, chưa trừ giảm giá) của khoản thu: `{ value, auto }`, không đủ dữ liệu thì null.
+ * Ưu tiên số đã lưu (đơn Etsy: total_price lấy từ Etsy); thiếu thì tự tính = đơn giá × số lượng,
+ * hoặc thành tiền + giảm giá. `auto` = true khi là số tự tính.
+ */
+function itemTotalOf(r) {
+  const saved = Number(r.itemTotal);
+  if (saved) return { value: saved, auto: false };
+  const unit = Number(r.unitPrice);
+  if (unit) return { value: round2(unit * (Number(r.productQty) || 1)), auto: true };
+  const sub = Number(r.subtotal);
+  if (sub) return { value: round2(sub + (Number(r.discountAmount) || 0)), auto: true };
+  return null;
+}
+/** Giảm giá của khoản thu: số đã lưu (đơn Etsy: discount_amt), thiếu thì tự tính = giá bán − thành tiền; không có thì null. */
+function discountOf(r) {
+  const saved = Number(r.discountAmount);
+  if (saved) return { value: saved, auto: false };
+  const item = itemTotalOf(r);
+  const sub = Number(r.subtotal);
+  return item && sub && item.value > sub ? { value: round2(item.value - sub), auto: true } : null;
+}
+/** Thành tiền = giá bán − giảm giá; chưa có giá bán thì dùng số đã lưu, không có thì null. */
+function subtotalOf(r) {
+  const item = itemTotalOf(r);
+  if (item) return round2(item.value - (discountOf(r)?.value || 0));
+  const saved = Number(r.subtotal);
+  return saved || null;
 }
 function afterTaxOf(r) {
   // Dùng số sau thuế đã lưu (đơn Etsy trong EU: tiền nhận về đã là tiền sau thuế), không có thì tự tính.
@@ -103,13 +144,18 @@ function afterTaxOf(r) {
   return r.amountAfterTax != null && Number.isFinite(saved) ? saved : afterTax(r.amount, r.taxPercent);
 }
 /**
- * Tỷ giá 1 EUR = ? USD dùng cho ngày `iso` (không truyền = tháng hiện tại): tỷ giá tự nhập của tháng đó.
- * Tháng chưa nhập (vd tháng hiện tại chưa có thông báo) mặc định là 1.
+ * Tỷ giá 1 EUR = ? USD dùng cho ngày `iso` (không truyền = hôm nay): tỷ giá tự nhập của riêng ngày đó,
+ * không có thì tỷ giá tự nhập của tháng. Tháng chưa nhập (vd tháng hiện tại chưa có thông báo) mặc định là 1.
  */
 function eurToUsdOn(iso) {
-  const manual = Number(FX_MONTHLY[String(iso || localISO(new Date())).slice(0, 7)]);
+  const day = String(iso || localISO(new Date()));
+  const daily = Number(FX_DAILY[day.slice(0, 10)]);
+  if (daily > 0) return daily;
+  const manual = Number(FX_MONTHLY[day.slice(0, 7)]);
   return manual > 0 ? manual : 1;
 }
+/** Ngày `iso` có tỷ giá tự nhập riêng không. */
+const hasDailyRate = (iso) => Number(FX_DAILY[String(iso || "").slice(0, 10)]) > 0;
 /** Tháng của `iso` đã tự nhập tỷ giá chưa. */
 const hasMonthlyRate = (iso) => Number(FX_MONTHLY[String(iso || "").slice(0, 7)]) > 0;
 /** USD → tiền hiển thị. Có `iso` thì quy đổi theo tỷ giá của tháng đó (như Excel: USD ÷ tỷ giá tháng). */
@@ -142,6 +188,10 @@ const pctLabel = (n) => `${Number(n) || 0}%`;
 const dmy = (iso) => (iso || "").split("-").reverse().join("/");
 const sourceLabel = (v) => (v === "ETSY" ? "Etsy" : v === "EXCEL_IMPORT" ? "Excel" : v === "LINKED" ? "Từ khoản thu" : "Nhập tay");
 const ETSY_READONLY = "Khoản nhập từ Etsy không được sửa, chỉ có thể xóa.";
+/** Khoản chi phí quảng cáo Etsy của một tháng (mã ADS-yyyy-MM): nhập từ Etsy nhưng sửa được số tiền. */
+const isEtsyAds = (r) => r?.source === "ETSY" && String(r.orderCode || "").startsWith("ADS-");
+/** Khoản Etsy bị khóa sửa (đơn hàng); phí quảng cáo thì không. */
+const isEtsyLocked = (r) => r?.source === "ETSY" && !isEtsyAds(r);
 /** Mã đơn dạng link mở trang chi tiết đơn trong Shop Manager của Etsy (tab mới). Không phải đơn Etsy thì chỉ hiện mã. */
 function orderCodeHtml(code, isEtsy) {
   if (!code) return '<span class="cell-code">—</span>';
@@ -154,11 +204,26 @@ const saleRegionLabel = (v) => (v === "IN_EU" ? "Trong EU" : v === "OUTSIDE_EU" 
 /** Tên phạm vi khoản chi; `v` là id phạm vi (dạng chuỗi). Dữ liệu cũ có thể còn mã DOMESTIC / INTERNATIONAL. */
 const originScopeLabel = (v) =>
   SCOPES.find((x) => String(x.id) === String(v))?.name || (v === "INTERNATIONAL" ? "Quốc tế" : v === "DOMESTIC" ? "Nội địa" : "—");
-/** Các khoản chi tiền xưởng / tiền ship gắn với khoản thu `income` và tổng số đã trả (gồm thuế, USD). */
+/**
+ * Các khoản chi tiền xưởng / tiền ship gắn với khoản thu `income` (USD): `total` = đã trả (gồm thuế),
+ * `before` = trước thuế, `tax` = phần thuế (lấy total − before để trước thuế + thuế luôn khớp số đã trả).
+ */
 function costOf(income, expenses) {
   const items = expenses.filter((x) => x.linkedIncomeId != null && String(x.linkedIncomeId) === String(income.id));
-  return { items, total: round2(items.reduce((t, x) => t + afterTaxOf(x), 0)) };
+  const total = round2(items.reduce((t, x) => t + afterTaxOf(x), 0));
+  const before = round2(items.reduce((t, x) => t + Number(x.amount), 0));
+  return { items, total, before, tax: round2(total - before) };
 }
+/**
+ * Lợi nhuận của đơn (USD) = trước thuế − tiền xưởng trước thuế (ngoài EU) / tiền ship trước thuế (trong EU).
+ * Phần thuế trong tiền xưởng / tiền ship được khấu trừ nên không trừ vào lợi nhuận.
+ */
+function profitOf(income, expenses) {
+  return round2(Number(income.amount) - costOf(income, expenses).before);
+}
+/** Tên chi phí gắn với đơn: trong EU là tiền ship, ngoài EU là tiền xưởng. */
+const costKindLabel = (income) => (income?.saleRegion === "IN_EU" ? "Tiền ship" : "Tiền xưởng");
+const NO_GROUP = "Chưa phân nhóm";
 function catName(list, id) {
   return list.find((c) => c.id === id)?.name || "—";
 }
@@ -196,7 +261,7 @@ function monthlyFrom(inc, exp) {
 function groupByCat(list, cats) {
   const map = {};
   list.forEach((e) => {
-    const n = catName(cats, e.categoryId);
+    const n = e.categoryId == null ? NO_GROUP : catName(cats, e.categoryId);
     map[n] = (map[n] || 0) + e.amount;
   });
   const total = Object.values(map).reduce((a, b) => a + b, 0) || 1;

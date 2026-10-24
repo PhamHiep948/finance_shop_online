@@ -47,6 +47,14 @@ namespace Fin.Presentation.Finance.Controllers.v1
         public async Task<IActionResult> ImportAsync(EtsyImportRequest request) =>
             Ok(await Mediator.Send(new ImportEtsyOrdersCommand { Orders = request.Orders ?? [] }));
 
+        [HttpGet("listings")]
+        public async Task<IActionResult> GetListingsAsync([FromQuery] string? from, [FromQuery] string? to) =>
+            Ok(await Mediator.Send(new GetEtsyListingsQuery { From = from, To = to }));
+
+        [HttpGet("fees")]
+        public async Task<IActionResult> GetFeesAsync([FromQuery] string? from, [FromQuery] string? to) =>
+            Ok(await Mediator.Send(new GetEtsyFeesQuery { From = from, To = to }));
+
         [HttpGet("autosync")]
         public async Task<IActionResult> GetAutoSyncAsync() => Ok(await Mediator.Send(new GetEtsyAutoSyncQuery()));
 

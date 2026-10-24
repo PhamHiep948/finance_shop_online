@@ -14,6 +14,10 @@ namespace Fin.Infrastructure.Finance.Interfaces
 
         IFxMonthlyRateRepository FxMonthlyRateRepository { get; }
 
+        IFxDailyRateRepository FxDailyRateRepository { get; }
+
         ICategoryGroupRepository CategoryGroupRepository { get; }
+
+        ITranslationRepository TranslationRepository { get; }
     }
 }

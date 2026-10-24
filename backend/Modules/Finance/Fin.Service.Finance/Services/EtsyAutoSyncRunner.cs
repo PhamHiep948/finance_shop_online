@@ -62,6 +62,10 @@ namespace Fin.Service.Finance.Services
                 LastRunAt = state.LastRunAt,
                 LastImported = state.LastImported,
                 TotalImported = state.TotalImported,
+                LastAdsImported = state.LastAdsImported,
+                AdsMonthDone = state.AdsMonthDone,
+                AdsLastRunAt = state.AdsLastRunAt,
+                AdsError = state.AdsError,
                 LastError = state.LastError,
                 Running = _runLock.CurrentCount == 0,
                 Ready = _etsyClient.IsReady,
@@ -88,6 +92,58 @@ namespace Fin.Service.Finance.Services
                 && (state.LastRunAt is null || LocalNow - state.LastRunAt >= TimeSpan.FromMinutes(state.IntervalMinutes));
         }
 
+        private static readonly TimeSpan AdsRetryAfter = TimeSpan.FromHours(1);
+
+        private string LastMonth => MonthKey.Of(new DateOnly(LocalNow.Year, LocalNow.Month, 1).AddMonths(-1));
+
+        // The ad spend of a month is written as an expense as soon as the month is over, whether or not the order sync
+        // is switched on; a failed attempt is retried every hour.
+        public bool IsAdsDue()
+        {
+            var state = State;
+            return _etsyClient.IsReady
+                && state.AdsMonthDone != LastMonth
+                && (state.AdsError is null || state.AdsLastRunAt is null || LocalNow - state.AdsLastRunAt >= AdsRetryAfter);
+        }
+
+        // Only the month that just ended is written: an older month may already have been entered by hand, or deleted
+        // on purpose (its trash entry possibly purged since), and must not come back.
+        public async Task RunAdsAsync(CancellationToken cancellationToken)
+        {
+            if (!await _runLock.WaitAsync(0, cancellationToken))
+            {
+                return;
+            }
+
+            var month = LastMonth;
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var importer = scope.ServiceProvider.GetRequiredService<EtsyAdsImporter>();
+                MonthKey.TryParse(month, out var first);
+                var result = await importer.ImportAsync([first], "Tự ghi phí quảng cáo Etsy cuối tháng", cancellationToken);
+                State.LastAdsImported = result.Imported;
+                State.AdsMonthDone = month;
+                State.AdsError = null;
+                if (result.Imported > 0)
+                {
+                    _logger.LogInformation("Etsy ad spend of {Month} written as an expense", month);
+                }
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                State.LastAdsImported = 0;
+                State.AdsError = e.Message;
+                _logger.LogWarning(e, "Could not write the Etsy ad spend of {Month}", month);
+            }
+            finally
+            {
+                State.AdsLastRunAt = LocalNow;
+                _stateStore.Save(State);
+                _runLock.Release();
+            }
+        }
+
         public async Task RunOnceAsync(CancellationToken cancellationToken)
         {
             if (!await _runLock.WaitAsync(0, cancellationToken))
@@ -104,7 +160,7 @@ namespace Fin.Service.Finance.Services
                 var importer = scope.ServiceProvider.GetRequiredService<EtsyOrderImporter>();
 
                 var receipts = await _etsyClient.GetPaidReceiptsAsync(from, to, cancellationToken);
-                var rates = await unitOfWork.FxMonthlyRateRepository.GetAllAsync(cancellationToken);
+                var rates = await FxRateBook.LoadAsync(unitOfWork, cancellationToken);
                 var orders = receipts.Select(r => EtsyOrderMapper.Map(r, rates, _options.CurrentValue.EuVatPercent)).ToList();
                 var result = await importer.ImportAsync(orders, "Tự động đồng bộ từ Etsy", cancellationToken);
 

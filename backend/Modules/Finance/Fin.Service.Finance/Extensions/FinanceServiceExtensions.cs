@@ -24,6 +24,7 @@ namespace Fin.Service.Finance.Extensions
             services.AddSingleton<PeriodLockPolicy>();
             services.AddScoped<AuditTrail>();
             services.AddScoped<EtsyOrderImporter>();
+            services.AddScoped<EtsyAdsImporter>();
             services.AddScoped<TrashPurger>();
             services.AddSingleton<EtsyAutoSyncRunner>();
 

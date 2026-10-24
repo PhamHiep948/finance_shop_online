@@ -13,7 +13,9 @@ namespace Fin.Infrastructure.Finance.UnitOfWorks
             IAttachmentRepository attachmentRepository,
             IAuditLogRepository auditLogRepository,
             IFxMonthlyRateRepository fxMonthlyRateRepository,
-            ICategoryGroupRepository categoryGroupRepository)
+            IFxDailyRateRepository fxDailyRateRepository,
+            ICategoryGroupRepository categoryGroupRepository,
+            ITranslationRepository translationRepository)
             : base(context)
         {
             CategoryRepository = categoryRepository;
@@ -21,7 +23,9 @@ namespace Fin.Infrastructure.Finance.UnitOfWorks
             AttachmentRepository = attachmentRepository;
             AuditLogRepository = auditLogRepository;
             FxMonthlyRateRepository = fxMonthlyRateRepository;
+            FxDailyRateRepository = fxDailyRateRepository;
             CategoryGroupRepository = categoryGroupRepository;
+            TranslationRepository = translationRepository;
         }
 
         public ICategoryRepository CategoryRepository { get; }
@@ -34,6 +38,10 @@ namespace Fin.Infrastructure.Finance.UnitOfWorks
 
         public IFxMonthlyRateRepository FxMonthlyRateRepository { get; }
 
+        public IFxDailyRateRepository FxDailyRateRepository { get; }
+
         public ICategoryGroupRepository CategoryGroupRepository { get; }
+
+        public ITranslationRepository TranslationRepository { get; }
     }
 }

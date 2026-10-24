@@ -4,6 +4,8 @@ const NAV_ITEMS = [
   { to: "/incomes", label: "Khoản thu", icon: "trending-up" },
   { to: "/expenses", label: "Khoản chi", icon: "trending-down" },
   { to: "/reports", label: "Báo cáo", icon: "pie-chart" },
+  { to: "/etsy-stats", label: "Sản phẩm & Quảng cáo", icon: "eye" },
+  { to: "/translations", label: "Bản dịch", icon: "languages" },
   { to: "/fx", label: "Tỷ giá", icon: "euro" },
   { to: "/history", label: "Lịch sử", icon: "history" },
   { to: "/trash", label: "Thùng rác", icon: "trash-2" },
@@ -14,7 +16,9 @@ const PAGE_METAS = {
   "/incomes": { breadcrumb: "Khoản thu", desc: "Quản lý doanh thu từ đơn hàng & bán lẻ" },
   "/expenses": { breadcrumb: "Khoản chi", desc: "Theo dõi chi phí hoạt động & đối soát thuế" },
   "/reports": { breadcrumb: "Báo cáo", desc: "Báo cáo tài chính & phân tích lợi nhuận" },
-  "/fx": { breadcrumb: "Tỷ giá", desc: "Tự nhập tỷ giá EUR → USD theo từng tháng" },
+  "/etsy-stats": { breadcrumb: "Sản phẩm & Quảng cáo", desc: "Sản phẩm Etsy nhiều lượt xem & tiền quảng cáo theo tháng" },
+  "/translations": { breadcrumb: "Bản dịch", desc: "Nhập bản dịch tiếng Đức cho giao diện web" },
+  "/fx": { breadcrumb: "Tỷ giá", desc: "Tự nhập tỷ giá EUR → USD theo tháng, hoặc riêng từng ngày" },
   "/history": { breadcrumb: "Lịch sử", desc: "Nhật ký thêm, sửa, xóa khoản thu chi và loại" },
   "/trash": { breadcrumb: "Thùng rác", desc: "Khôi phục hoặc xóa vĩnh viễn các khoản đã xóa" },
 };
@@ -24,6 +28,8 @@ const ROUTES = {
   "/incomes": IncomesPage,
   "/expenses": ExpensesPage,
   "/reports": ReportsPage,
+  "/etsy-stats": EtsyStatsPage,
+  "/translations": TranslationsPage,
   "/fx": FxPage,
   "/history": HistoryPage,
   "/trash": TrashPage,
@@ -41,7 +47,7 @@ function renderShell() {
           <div class="sb-brand-icon-img" style="width: 40px; height: 40px" aria-hidden="true">
             <img src="assets/mina-store-logo.jpg" alt="Mina Store Logo" width="40" height="40" class="brand-logo-img" loading="eager" />
           </div>
-          <div class="sb-brand-text">
+          <div class="sb-brand-text" translate="no">
             <span class="sb-brand-name">
               <span class="brand-name-mina">Mina</span>
               <span class="brand-name-store">Store</span>
@@ -80,6 +86,7 @@ function renderShell() {
         </div>
         <div class="topbar-right">
           <div class="workspace-tools">
+            <div class="ccy-toggle" id="lang-toggle" role="group" aria-label="Ngôn ngữ giao diện" translate="no"></div>
             <div class="ccy-toggle" id="ccy-toggle" role="group" aria-label="Tiền hiển thị"></div>
             <button type="button" class="workspace-tool-btn" id="theme-btn"></button>
           </div>
@@ -107,6 +114,10 @@ function renderShell() {
     const btn = e.target.closest("[data-ccy]");
     if (btn && btn.dataset.ccy !== store.ccy) setCcy(btn.dataset.ccy);
   });
+  document.getElementById("lang-toggle").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-lang]");
+    if (btn && btn.dataset.lang !== i18n.lang) setLang(btn.dataset.lang);
+  });
   document.getElementById("theme-btn").addEventListener("click", () => {
     darkMode = !darkMode;
     applyTheme();
@@ -130,6 +141,12 @@ function applyTheme() {
   btn.title = darkMode ? "Giao diện sáng" : "Giao diện tối";
   btn.setAttribute("aria-label", darkMode ? "Chuyển sang giao diện sáng" : "Chuyển sang giao diện tối");
   btn.setAttribute("aria-pressed", String(darkMode));
+}
+
+/** Nút đổi ngôn ngữ giao diện VI ⇄ DE (bản dịch nhập ở trang Bản dịch). */
+function renderLangToggle() {
+  document.getElementById("lang-toggle").innerHTML = I18N_LANGS.map(([v, label, name]) => `
+    <button type="button" class="ccy-opt${i18n.lang === v ? " on" : ""}" data-lang="${v}" aria-pressed="${i18n.lang === v}" title="${name}">${label}</button>`).join("");
 }
 
 /** Nút đổi tiền hiển thị USD ⇄ EUR trên thanh trên cùng (dùng chung cho mọi trang). */
@@ -299,6 +316,12 @@ async function pollEtsyAuto() {
   try { a = await etsyAutoSync(); } catch { return; }
   const changed = store.etsyAuto?.enabled !== a.enabled;
   store.etsyAuto = a;
+  // Hết tháng, backend tự ghi tiền quảng cáo Etsy của tháng đó vào Khoản chi.
+  if (store.etsyAdsSeen !== undefined && a.adsLastRunAt !== store.etsyAdsSeen && a.lastAdsImported > 0) {
+    toast(`Đã ghi tiền quảng cáo Etsy tháng ${String(a.adsMonthDone || "").split("-").reverse().join("/")} vào Khoản chi`);
+    reload();
+  }
+  store.etsyAdsSeen = a.adsLastRunAt;
   if (store.etsyAutoSeen !== undefined && a.lastRunAt !== store.etsyAutoSeen && a.lastImported > 0) {
     toast(`Đã tự động nhập ${a.lastImported} đơn Etsy mới`);
     store.etsyAutoSeen = a.lastRunAt;
@@ -313,8 +336,11 @@ async function pollEtsyAuto() {
 renderShell();
 applyTheme();
 renderCcyToggle();
+renderLangToggle();
+i18nStart();
 onStoreChange(renderPage);
 onStoreChange(renderCcyToggle);
+onStoreChange(renderLangToggle);
 window.addEventListener("hashchange", route);
 route();
 reload();

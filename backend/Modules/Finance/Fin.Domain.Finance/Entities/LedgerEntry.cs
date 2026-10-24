@@ -5,10 +5,14 @@ namespace Fin.Domain.Finance.Entities
 {
     public sealed class LedgerEntry : BaseEntity
     {
+        // Order code of the monthly Etsy advertising expense: "ADS-yyyy-MM".
+        public const string EtsyAdsCodePrefix = "ADS-";
+
         public string Kind { get; set; } = LedgerKinds.Income;
         public DateOnly Date { get; set; }
         public string Description { get; set; } = string.Empty;
-        public long CategoryId { get; set; }
+        // Null for an income whose product group has not been picked yet (Etsy imports start empty).
+        public long? CategoryId { get; set; }
         public decimal Amount { get; set; }
         public decimal TaxPercent { get; set; }
         public decimal AmountAfterTax { get; set; }
@@ -39,6 +43,9 @@ namespace Fin.Domain.Finance.Entities
         public bool IsDeleted => DeletedAt is not null;
 
         public bool IsFromEtsy => Source == EntrySources.Etsy;
+
+        // The month's Etsy ad spend: imported from Etsy but, unlike an order, its amount may be corrected by hand.
+        public bool IsEtsyAds => IsFromEtsy && Kind == LedgerKinds.Expense && OrderCode?.StartsWith(EtsyAdsCodePrefix, StringComparison.Ordinal) == true;
 
         public static decimal AfterTax(decimal amount, decimal taxPercent) =>
             decimal.Round(amount * (1 + taxPercent / 100), 2, MidpointRounding.AwayFromZero);

@@ -105,7 +105,7 @@ namespace Fin.Infrastructure.Finance.Repositories
                 .ToListAsync(cancellationToken);
         }
 
-        public async Task<HashSet<string>> GetExistingOrderCodesAsync(string salesChannel, IReadOnlyCollection<string> orderCodes, CancellationToken cancellationToken)
+        public async Task<HashSet<string>> GetExistingOrderCodesAsync(string salesChannel, IReadOnlyCollection<string> orderCodes, CancellationToken cancellationToken, string kind = LedgerKinds.Income)
         {
             if (orderCodes.Count == 0)
             {
@@ -114,7 +114,7 @@ namespace Fin.Infrastructure.Finance.Repositories
 
             // Trashed orders count as existing so a deleted Etsy order is not silently imported again.
             var codes = await _dbContext.LedgerEntries.AsNoTracking()
-                .Where(x => x.Kind == LedgerKinds.Income && x.SalesChannel == salesChannel && x.OrderCode != null && orderCodes.Contains(x.OrderCode))
+                .Where(x => x.Kind == kind && x.SalesChannel == salesChannel && x.OrderCode != null && orderCodes.Contains(x.OrderCode))
                 .Select(x => x.OrderCode!)
                 .ToListAsync(cancellationToken);
             return codes.ToHashSet();

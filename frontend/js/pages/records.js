@@ -39,6 +39,16 @@ const dash = '<span class="muted">—</span>';
 const regionText = (v) => (v ? `<span class="tag-text ${v === "IN_EU" ? "tx-eu" : "tx-out"}">${saleRegionLabel(v)}</span>` : dash);
 const scopeText = (v) => (v ? `<span class="cat-text ${catTone(Number(v) || (v === "INTERNATIONAL" ? 2 : 1))}">${esc(originScopeLabel(v))}</span>` : dash);
 
+/**
+ * Tách số đã trả (gồm thuế) thành trước thuế + thuế, như backend (LedgerEntry.BeforeTax): chỉ làm tròn một lần
+ * ở số trước thuế, phần thuế = đã trả − trước thuế nên cộng lại luôn đúng số đã trả.
+ */
+function splitPaid(paid, pct) {
+  if (paid === "" || paid == null) return { before: "", tax: "" };
+  const before = round2(Number(paid) / (1 + (Number(pct) || 0) / 100));
+  return { before, tax: round2(Number(paid) - before) };
+}
+
 /** Ô nhập tiền xưởng / tiền ship của khoản thu (dùng trong form thêm/sửa và trong panel chi tiết). */
 function costFieldsHtml(rec) {
   const { ccy } = store;
@@ -47,13 +57,28 @@ function costFieldsHtml(rec) {
   const date = linked?.expenseDate || rec?.incomeDate || store.lock.today;
   const paid = linked ? toDisplay(afterTaxOf(linked), ccy, date) : "";
   const tax = linked ? valNum(linked.taxPercent) : inEu ? 19 : "";
+  const split = splitPaid(paid, tax);
+  const computed = (name, value) => `<input name="${name}" type="number" step="0.01" readonly tabindex="-1" class="is-computed" value="${esc(value)}" />`;
   return [
     drInput("truck", `Số tiền đã trả (${ccy})`,
-      `<input name="costAmount" type="number" step="0.01" min="0" value="${esc(paid)}" placeholder="0.00" />`),
+      `<input name="costAmount" type="number" step="0.01" min="0" value="${esc(paid)}" placeholder="0.00" />`, { hint: "Số tiền thực trả, đã gồm thuế." }),
     drInput("percent", "% thuế trong số tiền", `<input name="costTax" type="number" step="0.01" min="0" max="100" value="${esc(tax)}" placeholder="0" />`),
+    drInput("circle-dollar-sign", `Trước thuế (${ccy})`, computed("costBefore", split.before), { cls: "is-readonly", hint: "Tự tính: đã trả ÷ (1 + % thuế)." }),
+    drInput("receipt", `Tiền thuế (${ccy})`, computed("costTaxAmount", split.tax), { cls: "is-readonly" }),
+    drInput("user", "Bên nhận", `<input name="costPayee" value="${esc(linked?.recipient || "")}" placeholder="${inEu ? "Hãng vận chuyển" : "Xưởng sản xuất"}" />`),
+    drInput("map-pin", "Phạm vi",
+      `<select name="costScope">${optionsHtml([["", "—"], ...SCOPES.map((x) => [x.id, x.name])], linked?.originScope)}</select>`),
     drInput("hash", "ID hóa đơn", `<input name="costInvoiceId" value="${esc(linked?.invoiceId || "")}" placeholder="Mã hóa đơn xưởng / mã vận đơn" />`),
     drInput("calendar", "Ngày chi", `<input name="costDate" type="date" value="${esc(date)}" />`),
   ].join("");
+}
+
+/** Cập nhật ô trước thuế / tiền thuế (chỉ đọc) khi gõ số đã trả hoặc % thuế. */
+function refreshCostSplit(form) {
+  if (!form.elements.costBefore) return;
+  const split = splitPaid(form.elements.costAmount.value, form.elements.costTax.value);
+  form.elements.costBefore.value = split.before;
+  form.elements.costTaxAmount.value = split.tax;
 }
 
 /** Đọc các ô tiền xưởng / tiền ship từ form; null nếu form không có các ô này. */
@@ -64,8 +89,28 @@ function costInputOf(form, ccy) {
     amount: fromDisplayNum(form.elements.costAmount.value, ccy, 0, date),
     taxPercent: Number(form.elements.costTax.value || 0),
     invoiceId: form.elements.costInvoiceId.value.trim(),
+    payee: form.elements.costPayee.value.trim(),
+    originScope: form.elements.costScope.value,
     date,
   };
+}
+
+/** Danh sách gợi ý cho ô "Nhóm sản phẩm" (gõ tên mới được, lưu sẽ tự thêm nhóm). */
+function productGroupListHtml() {
+  return `<datalist id="product-groups">${INCOME_CATEGORIES.map((c) => `<option value="${esc(c.name)}"></option>`).join("")}</datalist>`;
+}
+
+/**
+ * Tên nhóm sản phẩm người dùng gõ → id. Rỗng = null (chưa phân nhóm); tên chưa có thì thêm nhóm mới.
+ * Trả về undefined nếu thêm nhóm lỗi (đã báo lỗi).
+ */
+async function resolveProductGroup(name) {
+  const text = String(name || "").trim();
+  if (!text) return null;
+  const find = () => INCOME_CATEGORIES.find((c) => c.name.trim().toLowerCase() === text.toLowerCase())?.id;
+  if (find() != null) return find();
+  if (!(await addCategory("income", text))) return undefined;
+  return find();
 }
 
 // ---------------------------------------------------------------- Form thêm / sửa
@@ -117,7 +162,7 @@ function recordFormHtml(kind, rec, animate) {
   const cats = isIncome ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
   const firstCat = cats[0]?.id ?? "";
   const r = rec || (isIncome
-    ? { incomeDate: today, description: "", categoryId: firstCat, amount: "", taxPercent: "", orderCode: "", saleRegion: "", productQty: "", unitPrice: "", itemTotal: "", discountAmount: "", discountCode: "", subtotal: "", shippingAmount: "", taxAmount: "", referenceCode: "", note: "" }
+    ? { incomeDate: today, description: "", categoryId: null, amount: "", taxPercent: "", orderCode: "", saleRegion: "", productQty: "", unitPrice: "", itemTotal: "", discountAmount: "", discountCode: "", subtotal: "", shippingAmount: "", taxAmount: "", referenceCode: "", note: "" }
     : { expenseDate: today, description: "", categoryId: firstCat, amount: "", recipient: "", originScope: String(SCOPES[0]?.id ?? ""), invoiceId: "", taxPercent: "", note: "" });
   const dateName = isIncome ? "incomeDate" : "expenseDate";
   // Số tiền hiển thị theo tỷ giá của tháng chứa ngày thu / ngày chi.
@@ -134,7 +179,11 @@ function recordFormHtml(kind, rec, animate) {
     drInput("calendar", isIncome ? "Ngày thu" : "Ngày chi",
       `<input name="${dateName}" type="date" required value="${esc(r[dateName])}"${minDate ? ` min="${minDate}"` : ""} />`,
       { required: true, hint: minDate ? `${store.lock.period === "MONTH" ? "Tháng" : "Quý"} đã khóa sổ không nhập được. Ngày sớm nhất: ${dmy(minDate)}.` : "" }),
-    drInput("tags", isIncome ? "Loại thu" : "Loại chi", `<select name="categoryId">${catOptions}</select>`, { required: true }),
+    isIncome
+      ? drInput("tags", "Nhóm sản phẩm",
+          `<input name="productGroup" list="product-groups" autocomplete="off" value="${esc(r.categoryId == null ? "" : catName(cats, r.categoryId))}" placeholder="Để trống hoặc gõ tên nhóm" />${productGroupListHtml()}`,
+          { hint: "Chọn nhóm có sẵn hoặc gõ tên mới (tự thêm khi lưu)." })
+      : drInput("tags", "Loại chi", `<select name="categoryId">${catOptions}</select>`, { required: true }),
     drInput("file-text", isIncome ? "Tên sản phẩm" : "Nội dung",
       `<input name="description" required value="${esc(r.description)}"${isIncome ? ' placeholder="VD: Lily Flower"' : ""} />`, { required: true }),
     isIncome ? "" : drInput("user", "Bên nhận", `<input name="recipient" value="${esc(r.recipient)}" placeholder="Cửa hàng, nhà cung cấp…" />`),
@@ -157,13 +206,15 @@ function recordFormHtml(kind, rec, animate) {
         ].join(""),
       })
       + formSectionHtml({
-        id: "income-fees", title: "Chi tiết phí", sub: "Tiền hàng, giảm giá, vận chuyển, thuế",
+        id: "income-fees", title: "Chi tiết phí", sub: "Giá bán, giảm giá, vận chuyển, thuế",
         defaultOpen: !!(r.itemTotal || r.discountAmount || r.discountCode || r.subtotal || r.shippingAmount || r.taxAmount),
         body: [
-          drInput("circle-dollar-sign", `Tiền hàng (${ccy})`, num("itemTotal", disp(r.itemTotal))),
+          drInput("circle-dollar-sign", `Giá bán (${ccy})`, num("itemTotal", disp(r.itemTotal))),
           drInput("tags", `Giảm giá (${ccy})`, num("discountAmount", disp(r.discountAmount))),
-          drInput("hash", "Mã giảm giá", `<input name="discountCode" value="${esc(r.discountCode)}" placeholder="AGSALE43" />`),
-          drInput("circle-dollar-sign", `Tạm tính (${ccy})`, num("subtotal", disp(r.subtotal))),
+          drInput("hash", "Mã giảm giá", `<input name="discountCode" value="${esc(r.discountCode)}" placeholder="AGSALE43" translate="no" />`),
+          drInput("circle-dollar-sign", `Thành tiền (${ccy})`,
+            `<input name="subtotal" type="number" step="0.01" readonly tabindex="-1" class="is-computed" value="${esc(rec ? disp(subtotalOf(r)) : "")}" />`,
+            { hint: "Tự tính: giá bán − giảm giá.", cls: "is-readonly" }),
           drInput("truck", `Vận chuyển (${ccy})`, num("shippingAmount", disp(r.shippingAmount))),
           drInput("receipt", `Thuế (${ccy})`, num("taxAmount", disp(r.taxAmount))),
         ].join(""),
@@ -204,7 +255,7 @@ function recordFormHtml(kind, rec, animate) {
         </div>
         <div class="drawer-head">
           <div>
-            <h2>${rec ? esc(rec.description) : (isIncome ? "Thêm khoản thu" : "Thêm khoản chi")}</h2>
+            <h2${rec ? ' translate="no"' : ""}>${rec ? esc(rec.description) : (isIncome ? "Thêm khoản thu" : "Thêm khoản chi")}</h2>
             <p class="muted">${rec ? `Sửa ${typeLabel.toLowerCase()} #${rec.id} rồi bấm Cập nhật.` : "Nhập các trường có dấu *. Chi tiết bổ sung có thể thêm sau."}</p>
           </div>
         </div>
@@ -245,7 +296,7 @@ function pendingFilesHtml(files) {
       ${icon(f.type.startsWith("image/") ? "image" : "file", 15)}
       <span class="attach-pending-name">${esc(f.name)}</span>
       <span class="muted">${fileSize(f.size)}</span>
-      <button type="button" class="icon-ghost" aria-label="Bỏ file ${esc(f.name)}" data-action="pending-remove" data-index="${i}">${icon("x", 14)}</button>
+      <button type="button" class="icon-ghost" aria-label="Bỏ file này" data-action="pending-remove" data-index="${i}">${icon("x", 14)}</button>
     </li>`).join("");
 }
 
@@ -262,11 +313,11 @@ function attachmentsHtml(att, locked) {
     const created = new Date(a.createdAt).toLocaleDateString("vi-VN");
     return `
       <div class="attach-card">
-        <a class="attach-thumb" href="${attachmentUrl(a.id)}" target="_blank" rel="noopener" title="Xem ${esc(a.originalName)}">
+        <a class="attach-thumb" href="${attachmentUrl(a.id)}" target="_blank" rel="noopener" title="Xem chứng từ">
           ${isImage ? `<img src="${attachmentUrl(a.id)}" alt="${esc(a.originalName)}" loading="lazy" />` : `<span class="attach-ext">${esc(ext)}</span>`}
         </a>
         <div class="attach-meta">
-          <span class="attach-name" title="${esc(a.originalName)}">${esc(a.originalName)}</span>
+          <span class="attach-name" title="${esc(a.originalName)}" translate="no">${esc(a.originalName)}</span>
           <span class="muted">${fileSize(a.size)} · ${created}</span>
         </div>
         <div class="attach-actions">
@@ -296,55 +347,64 @@ function recordDetailHtml(kind, rec, att, nav, animate) {
   const st = recStatus(rec.id, kind, rec);
   const statusCls = st.k === "done" ? "ok" : st.k === "pending" ? "warn" : "neutral";
   const cats = isIncome ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
-  const catLabel = esc(catName(cats, rec.categoryId));
+  const catLabel = esc(rec.categoryId == null ? NO_GROUP : catName(cats, rec.categoryId));
   const amount = Number(rec.amount) || 0;
-  const taxAmt = Math.round((afterTaxOf(rec) - amount) * 100) / 100;
+  const taxAmt = round2(afterTaxOf(rec) - amount);
   const total = afterTaxOf(rec);
-  const disc = Number(rec.discountAmount) || 0;
+  const item = itemTotalOf(rec);
+  const discInfo = discountOf(rec);
+  const disc = discInfo?.value || 0;
+  const autoTag = (x) => (x?.auto ? ` <span class="muted" title="${AUTO_MONEY_TITLE}">(tự tính)</span>` : "");
+  const subtotal = isIncome ? subtotalOf(rec) : null;
   const ship = Number(rec.shippingAmount) || 0;
   const code = isIncome ? rec.orderCode || rec.referenceCode || `IN-${String(rec.id).padStart(3, "0")}` : `EXP-${String(rec.id).padStart(3, "0")}`;
   const when = (v) => (v ? new Date(v).toLocaleString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—");
   const lockedTitle = locked ? ` title="${esc(lockMessage(date))}" disabled` : "";
-  const fromEtsy = rec.source === "ETSY";
+  const fromEtsy = isEtsyLocked(rec);
   const editTitle = locked ? lockedTitle : fromEtsy ? ` title="${esc(ETSY_READONLY)}" disabled` : "";
 
   // Nhấp đúp vào dòng để sửa nhanh (trừ khoản Etsy và khoản thuộc kỳ đã khóa); * = trường bắt buộc.
   const canEdit = !locked && !fromEtsy;
   const ed = (field, required = false) => ({ edit: canEdit ? field : "", required });
+  // Nhóm sản phẩm không có từ Etsy nên đơn Etsy vẫn sửa được ô này.
+  const edGroup = { edit: !locked ? "categoryId" : "" };
   const basic = isIncome
     ? [
-        drRow("file-text", "Tên sản phẩm", esc(rec.description), "", ed("description", true)),
+        drRow("file-text", "Tên sản phẩm", `<span translate="no">${esc(rec.description)}</span>`, "", ed("description", true)),
         drRow("calendar", "Ngày thu", esc(dmy(date)), "", ed("date", true)),
-        drRow("tags", "Loại thu", `<span class="badge record-list-label ${catTone(rec.categoryId)}">${catLabel}</span>`, "", ed("categoryId", true)),
+        drRow("tags", "Nhóm sản phẩm", rec.categoryId == null
+          ? `<span class="muted">${NO_GROUP}</span>`
+          : `<span class="badge record-list-label ${catTone(rec.categoryId)}">${catLabel}</span>`, "", edGroup),
         drRow("hash", "Mã đơn", rec.orderCode ? orderCodeHtml(rec.orderCode, rec.salesChannel === "ETSY_STORE") : dash, "", ed("orderCode")),
         drRow("store", "Kênh bán", esc(salesChannelLabel(rec.salesChannel))),
         drRow("globe", "Khu vực", regionText(rec.saleRegion), "", ed("saleRegion")),
         drRow("package", "Số lượng", esc(rec.productQty || "—"), "", ed("productQty")),
-        drRow("hash", "Mã tham chiếu", rec.referenceCode ? esc(rec.referenceCode) : dash, "", ed("referenceCode")),
-        drRow("sticky-note", "Ghi chú", rec.note ? esc(rec.note) : dash, "is-multiline", ed("note")),
+        drRow("hash", "Mã tham chiếu", rec.referenceCode ? `<span class="cell-code">${esc(rec.referenceCode)}</span>` : dash, "", ed("referenceCode")),
+        drRow("sticky-note", "Ghi chú", rec.note ? `<span translate="no">${esc(rec.note)}</span>` : dash, "is-multiline", ed("note")),
       ]
     : [
-        drRow("file-text", "Nội dung", esc(rec.description), "", ed("description", true)),
+        drRow("file-text", "Nội dung", `<span translate="no">${esc(rec.description)}</span>`, "", ed("description", true)),
         drRow("calendar", "Ngày chi", esc(dmy(date)), "", ed("date", true)),
         drRow("tags", "Loại chi", `<span class="cat-text ${catTone(rec.categoryId)}">${catLabel}</span>`, "", ed("categoryId", true)),
-        drRow("user", "Bên nhận", esc(rec.recipient || "—"), "", ed("recipient")),
+        drRow("user", "Bên nhận", `<span translate="no">${esc(rec.recipient || "—")}</span>`, "", ed("recipient")),
         drRow("map-pin", "Phạm vi", scopeText(rec.originScope), "", ed("originScope")),
         drRow("hash", "ID hóa đơn", rec.invoiceId ? `<span class="cell-code">${esc(rec.invoiceId)}</span>` : dash, "", ed("invoiceId")),
         rec.linkedIncomeId ? drRow("link", "Của khoản thu", (() => {
           const inc = store.incomes.find((x) => String(x.id) === String(rec.linkedIncomeId));
           return inc
-            ? `<a class="dr-link" href="#/incomes?view=${inc.id}">${esc(inc.description)}</a>${inc.orderCode ? ` <span class="muted">· ${esc(inc.orderCode)}</span>` : ""}`
+            ? `<a class="dr-link" href="#/incomes?view=${inc.id}" translate="no">${esc(inc.description)}</a>${inc.orderCode ? ` <span class="muted" translate="no">· ${esc(inc.orderCode)}</span>` : ""}`
             : '<span class="muted">Khoản thu đã bị xóa</span>';
         })()) : "",
         drRow("credit-card", "Phương thức", esc(paymentMethodLabel(rec.paymentMethod))),
-        drRow("sticky-note", "Ghi chú", rec.note ? esc(rec.note) : dash, "is-multiline", ed("note")),
+        drRow("sticky-note", "Ghi chú", rec.note ? `<span translate="no">${esc(rec.note)}</span>` : dash, "is-multiline", ed("note")),
       ];
 
   const money2 = (v) => esc(usd(v));
   const finance = isIncome
     ? [
-        drRow("circle-dollar-sign", "Tiền hàng", rec.itemTotal ? money2(rec.itemTotal) : dash, "", ed("itemTotal")),
-        drRow("tags", "Giảm giá", disc ? `<span class="minus">− ${money2(disc)}</span>${rec.discountCode ? ` <span class="muted">(${esc(rec.discountCode)})</span>` : ""}` : dash, "", ed("discountAmount")),
+        drRow("circle-dollar-sign", "Giá bán", item ? `${money2(item.value)}${autoTag(item)}` : dash, "", ed("itemTotal")),
+        drRow("tags", "Giảm giá", disc ? `<span class="minus">− ${money2(disc)}</span>${rec.discountCode ? ` <span class="muted" translate="no">(${esc(rec.discountCode)})</span>` : ""}${autoTag(discInfo)}` : dash, "", ed("discountAmount")),
+        drRow("circle-dollar-sign", "Thành tiền", subtotal != null ? `${money2(subtotal)} <span class="muted">(giá bán − giảm giá)</span>` : dash),
         drRow("truck", "Vận chuyển", ship ? money2(ship) : dash, "", ed("shippingAmount")),
         drRow("circle-dollar-sign", "Trước thuế", money2(amount), "", ed("amount", true)),
         drRow("percent", `Thuế (${pctLabel(rec.taxPercent)})`, money2(taxAmt), "", ed("taxPercent")),
@@ -366,8 +426,8 @@ function recordDetailHtml(kind, rec, att, nav, animate) {
       </div>
       <div class="drawer-head">
         <div class="drawer-title">
-          <h2>${esc(rec.description)}</h2>
-          <p class="muted">${isIncome ? "Khoản thu" : "Khoản chi"} · <span class="dr-link">${catLabel}</span> · ${esc(code)}</p>
+          <h2 translate="no">${esc(rec.description)}</h2>
+          <p class="muted">${isIncome ? "Khoản thu" : "Khoản chi"} · <span class="dr-link">${catLabel}</span> · <span translate="no">${esc(code)}</span></p>
         </div>
         <div class="drawer-actions">
           <a class="dr-icon-btn" href="#/history?type=${rec.kind}&id=${rec.id}" title="Lịch sử chỉnh sửa">${icon("history", 16)}</a>
@@ -380,24 +440,27 @@ function recordDetailHtml(kind, rec, att, nav, animate) {
           <h4>Trạng thái</h4>
           <div class="dr-rows">
             ${drRow("circle-check", "Trạng thái", `<span class="badge ${statusCls}">${st.t}</span>`)}
-            ${drRow(locked ? "lock" : "lock-open", "Khóa sổ", locked
+            ${store.lock.enabled ? drRow(locked ? "lock" : "lock-open", "Khóa sổ", locked
               ? `<span class="lock-text locked">Đã khóa sổ ${esc(periodName(date).toLowerCase())}</span>`
-              : `<span class="lock-text open">Đang mở · sửa được đến hết ${esc(dmy(lastEditableDay(date)))}</span>`)}
-            ${fromEtsy ? drRow("store", "Nguồn", '<span class="lock-text locked">Nhập từ Etsy · chỉ xem hoặc xóa, không sửa</span>') : ""}
+              : `<span class="lock-text open">Đang mở · sửa được đến hết ${esc(dmy(lastEditableDay(date)))}</span>`) : ""}
+            ${fromEtsy ? drRow("store", "Nguồn", '<span class="lock-text locked">Nhập từ Etsy · chỉ sửa được nhóm sản phẩm và tiền xưởng / ship</span>') : ""}
+            ${isEtsyAds(rec) ? drRow("store", "Nguồn", '<span class="lock-text open">Phí quảng cáo nhập từ Etsy · sửa được, Lịch sử giữ số Etsy ban đầu</span>') : ""}
             ${drRow("clock", "Tạo lúc", esc(when(rec.createdAt)))}
             ${rec.updatedAt && rec.updatedAt !== rec.createdAt ? drRow("pencil", "Cập nhật", esc(when(rec.updatedAt))) : ""}
           </div>
         </section>
         <section class="dr-section">
           <h4>Thông tin chi tiết</h4>
-          <p class="dr-edit-hint muted">${canEdit ? "Nhấp đúp vào ô để sửa nhanh · " : ""}<span class="req">*</span> là trường bắt buộc</p>
+          <p class="dr-edit-hint muted">${canEdit ? "Nhấp đúp vào ô để sửa nhanh · " : isIncome && !locked ? "Nhấp đúp vào nhóm sản phẩm để sửa · " : ""}<span class="req">*</span> là trường bắt buộc</p>
           <div class="dr-rows">${basic.join("")}</div>
         </section>
         <section class="dr-section">
           <h4>Chi tiết tài chính</h4>
           <div class="dr-rows">${finance.join("")}</div>
-          <p class="dr-foot-note muted">Tỷ giá quy đổi tháng ${esc(String(date).slice(5, 7))}/${esc(String(date).slice(0, 4))}: 1 EUR = ${fmtRate(eurToUsdOn(date))} USD
-            ${hasMonthlyRate(date) ? "(tự nhập)" : `(chưa nhập tỷ giá tháng này, đang dùng mặc định 1 · <a class="dr-link" href="#/fx">Nhập tỷ giá</a>)`}</p>
+          <p class="dr-foot-note muted">${hasDailyRate(date)
+            ? `Tỷ giá quy đổi ngày ${esc(dmy(date))}: 1 EUR = ${fmtRate(eurToUsdOn(date))} USD (tự nhập riêng ngày này)`
+            : `Tỷ giá quy đổi tháng ${esc(String(date).slice(5, 7))}/${esc(String(date).slice(0, 4))}: 1 EUR = ${fmtRate(eurToUsdOn(date))} USD
+            ${hasMonthlyRate(date) ? "(tự nhập)" : `(chưa nhập tỷ giá tháng này, đang dùng mặc định 1 · <a class="dr-link" href="#/fx">Nhập tỷ giá</a>)`}`}</p>
         </section>
         ${isIncome ? costSectionHtml(rec) : ""}
         <section class="dr-section dr-attach"${locked ? "" : ' data-drop="detail"'}>
@@ -419,20 +482,33 @@ function recordDetailHtml(kind, rec, att, nav, animate) {
 function costSectionHtml(rec) {
   const cost = costOf(rec, store.expenses);
   const linked = cost.items[0];
-  // Như Excel: tiền trước thuế của đơn − tiền xưởng / tiền ship trước thuế (phần thuế trong tiền ship được khấu trừ).
-  const profit = Number(rec.amount) - cost.items.reduce((t, x) => t + Number(x.amount), 0);
+  const kindLabel = costKindLabel(rec);
+  const date = rec.incomeDate;
+  // Quy đổi một lần từ số USD đã cộng (không cộng các số đã làm tròn theo EUR) để hạn chế sai số.
+  const m = (v) => esc(money(v, store.ccy, date));
+  const before = toDisplay(cost.before, store.ccy, linked?.expenseDate || date);
+  const after = toDisplay(cost.total, store.ccy, linked?.expenseDate || date);
+  // Như Excel: tiền trước thuế của đơn − tiền xưởng (ngoài EU) / tiền ship (trong EU) trước thuế.
+  const profit = profitOf(rec, store.expenses);
   return `
     <section class="dr-section">
       <div class="dr-section-head">
         <h4>${icon("truck", 13)} Tiền xưởng / Tiền ship</h4>
         ${linked ? `<a class="btn ghost sm" href="#/expenses?view=${linked.id}">${icon("external-link", 13)} Xem khoản chi</a>` : ""}
       </div>
+      ${linked ? `<div class="dr-rows">
+        ${drRow("circle-dollar-sign", `${kindLabel} trước thuế`, esc(fmtCcy(before, store.ccy)))}
+        ${drRow("percent", `Thuế (${pctLabel(linked.taxPercent)})`, esc(fmtCcy(round2(after - before), store.ccy)))}
+        ${drRow("receipt", `${kindLabel} sau thuế`, `<b class="minus">${esc(fmtCcy(after, store.ccy))}</b>`)}
+      </div>` : ""}
+      <div class="dr-rows">
+        ${drRow("trending-up", "Lợi nhuận", `<b class="${profit < 0 ? "minus" : "plus"}">${m(profit)}</b>
+          <span class="muted">= trước thuế − ${kindLabel.toLowerCase()} trước thuế</span>`, "is-total income")}
+      </div>
       <form class="cost-form" data-form="cost">
         <div class="dr-rows">${costFieldsHtml(rec)}</div>
         <div class="cost-form-foot">
-          <span class="muted">${cost.total
-            ? `Lợi nhuận đơn ≈ <b class="${profit < 0 ? "minus" : "plus"}">${esc(usd(profit))}</b> (trước thuế − tiền xưởng / ship trước thuế)`
-            : "Lưu xong, số tiền này hiện ở trang Khoản chi và được tính vào báo cáo."}</span>
+          <span class="muted">Lưu xong, số tiền này hiện ở trang Khoản chi và được tính vào báo cáo.</span>
           <button class="btn primary sm" type="submit">${icon("check", 14)} Lưu</button>
         </div>
       </form>
@@ -467,7 +543,7 @@ function createRecordsPage(kind) {
       const date = r[dateKey];
       return (
         (!qq || text.toLowerCase().includes(qq)) &&
-        (!s.cat || String(r.categoryId) === s.cat) &&
+        (!s.cat || (s.cat === "none" ? r.categoryId == null : String(r.categoryId) === s.cat)) &&
         (!s.src || r.source === s.src) &&
         (!s.region || r.saleRegion === s.region) &&
         (!s.origin || r.originScope === s.origin) &&
@@ -489,11 +565,14 @@ function createRecordsPage(kind) {
       : "Toàn bộ thời gian";
     const before = total((x) => x.amount);
     const after = total(afterTaxOf);
+    // Lợi nhuận: quy đổi từng đơn theo tỷ giá tháng của đơn, mỗi đơn chỉ làm tròn một lần.
+    const profit = isIncome ? total((x) => profitOf(x, store.expenses)) : 0;
     return isIncome
       ? [
           { label: "Số đơn hàng", value: String(rows.length), delta: period },
           { label: "Tổng doanh thu (trước thuế)", value: fmt(before), delta: period },
           { label: "Tổng sau thuế", value: fmt(after), delta: `Thuế: ${fmt(after - before)}` },
+          { label: "Lợi nhuận", value: fmt(profit), delta: "Trước thuế − xưởng / ship trước thuế" },
         ]
       : [
           { label: "Số khoản chi", value: String(rows.length), delta: period },
@@ -503,7 +582,7 @@ function createRecordsPage(kind) {
   }
 
   function headerCell(id) {
-    const numeric = ["qty", "amount", "taxPercent", "afterTax", "item", "discount", "ship", "tax", "fx", "cost"].includes(id);
+    const numeric = ["qty", "amount", "taxPercent", "afterTax", "item", "discount", "subtotal", "ship", "tax", "fx", "costBefore", "costTax", "cost", "profit"].includes(id);
     return `<th${numeric ? ' class="amount"' : ""}>${esc(defsById[id]?.label)}</th>`;
   }
 
@@ -521,19 +600,19 @@ function createRecordsPage(kind) {
       case "product": return `
         <td>
           <div class="cell-product-wrap">
-            <button type="button" class="cell-link cell-product-name">${esc(r.description)}</button>
+            <button type="button" class="cell-link cell-product-name" translate="no">${esc(r.description)}</button>
             <span class="badge cell-status-badge ${statusCls}">${st.t}</span>
             ${r.attachmentCount ? `<span class="cell-attach" title="${r.attachmentCount} chứng từ">${icon("paperclip", 12)}${r.attachmentCount}</span>` : ""}
-            ${r.source === "ETSY" ? '<span class="cell-src-etsy" title="Nhập từ Etsy · chỉ xem / xóa">Etsy</span>' : ""}
+            ${r.source === "ETSY" ? `<span class="cell-src-etsy" title="${isEtsyAds(r) ? "Phí quảng cáo nhập từ Etsy · sửa được" : "Nhập từ Etsy · chỉ xem / xóa"}">Etsy</span>` : ""}
             ${r.linkedIncomeId ? '<span class="cell-src-linked" title="Tiền xưởng / tiền ship nhập từ khoản thu">Từ khoản thu</span>' : ""}
             ${isLocked(r[dateKey]) ? `<span class="cell-lock" title="${esc(lockMessage(r[dateKey]))}">${icon("lock", 12)}</span>` : ""}
           </div>
         </td>`;
       case "category": return isIncome
-        ? `<td><span class="badge record-list-label ${catTone(r.categoryId)}">${esc(catName(cats(), r.categoryId))}</span></td>`
+        ? (r.categoryId == null ? `<td>${dash}</td>` : `<td><span class="badge record-list-label ${catTone(r.categoryId)}">${esc(catName(cats(), r.categoryId))}</span></td>`)
         : `<td><span class="cat-text ${catTone(r.categoryId)}">${esc(catName(cats(), r.categoryId))}</span></td>`;
       case "order": return `<td>${orderCodeHtml(r.orderCode, r.salesChannel === "ETSY_STORE")}</td>`;
-      case "payee": return `<td><span class="cell-payee">${esc(r.recipient || "—")}</span></td>`;
+      case "payee": return `<td><span class="cell-payee" translate="no">${esc(r.recipient || "—")}</span></td>`;
       case "qty": return `<td class="amount"><span class="cell-qty">${esc(r.productQty || "—")}</span></td>`;
       case "amount": return `<td class="amount"><span class="${sign}">${isIncome ? "+" : "−"}${m(r.amount)}</span></td>`;
       case "taxPercent": return `<td class="amount"><span class="cell-tax-pct">${pctLabel(r.taxPercent)}</span></td>`;
@@ -542,8 +621,18 @@ function createRecordsPage(kind) {
       case "origin": return `<td>${scopeText(r.originScope)}</td>`;
       case "invoice": return `<td>${r.invoiceId ? `<span class="cell-code">${esc(r.invoiceId)}</span>` : dash}</td>`;
       case "source": return `<td><span class="badge ${srcCls}">${sourceLabel(r.source)}</span></td>`;
-      case "item": return `<td class="amount">${r.itemTotal ? m(r.itemTotal) : dash}</td>`;
-      case "discount": return `<td class="amount">${Number(r.discountAmount) ? `<span class="minus">−${m(r.discountAmount)}</span>` : dash}</td>`;
+      case "item": {
+        const item = itemTotalOf(r);
+        return `<td class="amount">${item ? m(item.value) : dash}</td>`;
+      }
+      case "discount": {
+        const disc = discountOf(r);
+        return `<td class="amount">${disc ? `<span class="minus">−${m(disc.value)}</span>` : dash}</td>`;
+      }
+      case "subtotal": {
+        const sub = subtotalOf(r);
+        return `<td class="amount">${sub != null ? m(sub) : dash}</td>`;
+      }
       case "ship": return `<td class="amount">${Number(r.shippingAmount) ? m(r.shippingAmount) : dash}</td>`;
       case "tax": return `<td class="amount">${m(Number(r.taxAmount) || 0)}</td>`;
       case "fx": {
@@ -555,14 +644,26 @@ function createRecordsPage(kind) {
           <div class="cell-sub">≈ ${money(afterTaxOf(r), other, date)}</div>
         </td>`;
       }
+      case "costBefore":
+      case "costTax":
       case "cost": {
         const cost = costOf(r, store.expenses);
         if (!cost.items.length) return `<td class="amount">${dash}</td>`;
+        // Quy theo tỷ giá tháng của ngày chi; thuế = sau thuế − trước thuế (đã quy đổi) để 3 cột luôn khớp nhau.
+        const d = cost.items[0].expenseDate || date;
+        const before = toDisplay(cost.before, ccy, d);
+        const after = toDisplay(cost.total, ccy, d);
+        if (id === "costBefore") return `<td class="amount">${fmtCcy(before, ccy)}<div class="cell-sub">${costKindLabel(r)}</div></td>`;
+        if (id === "costTax") return `<td class="amount">${fmtCcy(round2(after - before), ccy)}<div class="cell-sub">${pctLabel(cost.items[0].taxPercent)}</div></td>`;
         const ids = cost.items.map((x) => x.invoiceId).filter(Boolean);
         return `<td class="amount">
-          <span class="minus">−${m(cost.total)}</span>
-          <div class="cell-sub">${r.saleRegion === "IN_EU" ? "Ship" : "Xưởng"}${ids.length ? ` · ${esc(ids.join(", "))}` : ""}</div>
+          <span class="minus">−${fmtCcy(after, ccy)}</span>
+          <div class="cell-sub">${r.saleRegion === "IN_EU" ? "Ship" : "Xưởng"}${ids.length ? ` · <span translate="no">${esc(ids.join(", "))}</span>` : ""}</div>
         </td>`;
+      }
+      case "profit": {
+        const profit = profitOf(r, store.expenses);
+        return `<td class="amount"><strong class="${profit < 0 ? "minus" : "plus"}">${m(profit)}</strong></td>`;
       }
       default: return "<td></td>";
     }
@@ -617,6 +718,7 @@ function createRecordsPage(kind) {
         ${items.map(([v, l]) => `<button type="button" class="rpt-seg-btn${String(s[key]) === String(v) ? " on" : ""}" data-action="set-filter" data-key="${key}" data-value="${esc(v)}">${esc(l)}</button>`).join("")}
       </div>`;
     const sources = [["", "Tất cả"], ["MANUAL", "Nhập tay"], isIncome ? ["ETSY", "Etsy"] : ["LINKED", "Từ khoản thu"]];
+    if (!isIncome && list().some((r) => r.source === "ETSY")) sources.push(["ETSY", "Etsy"]); // phí quảng cáo nhập từ Etsy
     if (list().some((r) => r.source === "EXCEL_IMPORT")) sources.push(["EXCEL_IMPORT", "Excel"]);
     return `
       <div class="record-filters">
@@ -629,9 +731,9 @@ function createRecordsPage(kind) {
           </div>
         </div>
         <div class="rpt-ctl">
-          <span>${isIncome ? "Loại thu" : "Loại chi"}</span>
+          <span>${isIncome ? "Nhóm sản phẩm" : "Loại chi"}</span>
           <select class="rpt-select${s.cat ? " is-active" : ""}" data-filter="cat">
-            ${optionsHtml([["", "Tất cả"], ...cats().map((c) => [c.id, c.name])], s.cat)}
+            ${optionsHtml([["", "Tất cả"], ...(isIncome ? [["none", NO_GROUP]] : []), ...cats().map((c) => [c.id, c.name])], s.cat)}
           </select>
         </div>
         <div class="rpt-ctl"><span>Nguồn</span>${seg("src", sources)}</div>
@@ -665,8 +767,8 @@ function createRecordsPage(kind) {
                     <span>${esc(c.label)}${c.lock ? " · luôn hiện" : ""}</span>
                   </label>
                   <span class="col-order-actions">
-                    <button type="button" aria-label="Đưa cột ${esc(c.label)} sang trái" data-action="col-move" data-id="${c.id}" data-step="-1"${index === 0 ? " disabled" : ""}>←</button>
-                    <button type="button" aria-label="Đưa cột ${esc(c.label)} sang phải" data-action="col-move" data-id="${c.id}" data-step="1"${index === s.draftOrder.length - 1 ? " disabled" : ""}>→</button>
+                    <button type="button" aria-label="Đưa cột sang trái" data-action="col-move" data-id="${c.id}" data-step="-1"${index === 0 ? " disabled" : ""}>←</button>
+                    <button type="button" aria-label="Đưa cột sang phải" data-action="col-move" data-id="${c.id}" data-step="1"${index === s.draftOrder.length - 1 ? " disabled" : ""}>→</button>
                   </span>
                 </div>`;
             }).join("")}
@@ -684,19 +786,12 @@ function createRecordsPage(kind) {
 
   function etsyStatusHtml(st) {
     if (!st) return '<div class="etsy-status">Đang kiểm tra kết nối…</div>';
-    if (!st.configured) {
+    // Thiếu / sai key là việc cấu hình phía máy chủ: không hiện lỗi kỹ thuật cho người dùng (chi tiết ghi ra console khi tải trạng thái).
+    if (!st.configured || st.keyError) {
       return `
-        <div class="etsy-status error">
-          ${icon("triangle-alert", 16)}
-          <div><b>Chưa cấu hình key Etsy.</b> Điền <code>ApiKey</code>, <code>SharedSecret</code> trong
-          <code>backend/etsy.settings.json</code>. Callback URL cần khai báo trên Etsy: <code>${esc(st.redirectUri)}</code></div>
-        </div>`;
-    }
-    if (st.keyError) {
-      return `
-        <div class="etsy-status error">
-          ${icon("triangle-alert", 16)}
-          <div><b>Key Etsy chưa dùng được.</b> ${esc(st.keyError)}</div>
+        <div class="etsy-status">
+          ${icon("link", 16)}
+          <div>Đồng bộ Etsy chưa sẵn sàng.</div>
         </div>`;
     }
     if (!st.connected) {
@@ -710,7 +805,7 @@ function createRecordsPage(kind) {
     return `
       <div class="etsy-status ok">
         ${icon("check", 16)}
-        <div><b>Đã kết nối shop${st.shopId ? " " + esc(st.shopId) : " Etsy"}.</b> Đơn đã nhập sẽ không bị nhập trùng.</div>
+        <div><b>Đã kết nối shop${st.shopId ? ` <span translate="no">${esc(st.shopId)}</span>` : " Etsy"}.</b> Đơn đã nhập sẽ không bị nhập trùng.</div>
         <button class="btn ghost sm" type="button" data-action="etsy-disconnect">Ngắt kết nối</button>
       </div>`;
   }
@@ -743,7 +838,7 @@ function createRecordsPage(kind) {
                   <td><input type="checkbox" data-etsy-pick="${esc(o.receiptId)}"${e.selected.has(o.receiptId) ? " checked" : ""}${o.imported ? " disabled" : ""} /></td>
                   <td>${esc(dmy(o.date))}</td>
                   <td>${orderCodeHtml(o.receiptId, true)}</td>
-                  <td>${esc(o.description)}${o.imported ? ' <span class="badge ok">Đã nhập</span>' : ""}${o.note ? `<div class="muted etsy-note">${esc(o.note)}</div>` : ""}</td>
+                  <td><span translate="no">${esc(o.description)}</span>${o.imported ? ' <span class="badge ok">Đã nhập</span>' : ""}${o.note ? `<div class="muted etsy-note">${esc(o.note)}</div>` : ""}</td>
                   <td class="amount">${o.quantity}</td>
                   <td>${esc(o.country)} · <span class="muted">${o.saleRegion === "IN_EU" ? "EU" : "Ngoài EU"}</span></td>
                   <td class="amount">${esc(usd(o.amount))}</td>
@@ -775,7 +870,7 @@ function createRecordsPage(kind) {
           ${etsyRatesHtml()}
           ${body}
           <div class="modal-actions etsy-foot">
-            <span class="muted">${picked.length ? `Đã chọn ${picked.length} đơn · ${esc(usd(pickedTotal))} (gồm thuế)` : "Đơn nhập vào sẽ thuộc loại thu mặc định, kênh bán Etsy Store."}</span>
+            <span class="muted">${picked.length ? `Đã chọn ${picked.length} đơn · ${esc(usd(pickedTotal))} (gồm thuế)` : "Đơn nhập vào để trống nhóm sản phẩm (nhập sau), kênh bán Etsy Store."}</span>
             <button class="btn secondary" type="button" data-action="etsy-close">Đóng</button>
             <button class="btn primary" type="button" data-action="etsy-import"${picked.length && !e.importing ? "" : " disabled"}>
               ${e.importing ? "Đang nhập…" : `Nhập ${picked.length || ""} đơn`}
@@ -915,6 +1010,11 @@ function createRecordsPage(kind) {
       const [status, rates, auto] = await Promise.all([etsyStatus(), fxMonthly().catch(() => []), etsyAutoSync().catch(() => null)]);
       if (auto) store.etsyAuto = auto;
       s.etsy.status = status;
+      if (status && (!status.configured || status.keyError)) {
+        console.warn(status.keyError
+          ? `Key Etsy chưa dùng được: ${status.keyError}`
+          : `Chưa cấu hình key Etsy (backend/Host/Fin.Host.Api/etsy.settings.json). Callback URL: ${status.redirectUri}`);
+      }
       s.etsy.rates = Object.fromEntries((rates || []).map((r) => [r.month, r.eurToUsd]));
     } catch (err) {
       s.etsy.status = { ready: false, configured: false, redirectUri: "" };
@@ -958,7 +1058,7 @@ function createRecordsPage(kind) {
   // Modal quản lý dùng chung: loại thu / loại chi, hoặc phạm vi khoản chi (s.catsMode === "scope").
   const catsList = () => (s.catsMode === "scope" ? SCOPES : cats());
   const catsApiKind = () => (s.catsMode === "scope" ? "scope" : kind);
-  const catsLabel = () => (s.catsMode === "scope" ? "phạm vi" : isIncome ? "loại thu" : "loại chi");
+  const catsLabel = () => (s.catsMode === "scope" ? "phạm vi" : isIncome ? "nhóm sản phẩm" : "loại chi");
 
   /** Modal thêm / đổi tên / xóa loại thu, loại chi hoặc phạm vi khoản chi. */
   function catsModalHtml() {
@@ -997,7 +1097,7 @@ function createRecordsPage(kind) {
             ? "Thêm, đổi tên hoặc xóa phạm vi tự do. Xóa phạm vi đang dùng thì các khoản đó chuyển về để trống phạm vi."
             : `Thêm, đổi tên hoặc xóa ${label}. Chỉ xóa được ${label} chưa có khoản nào sử dụng.`}</p>
           <form class="cat-inline-form cat-add-form" data-form="cat-add">
-            <input name="name" placeholder="Tên ${label} mới, ví dụ: ${s.catsMode === "scope" ? "Trong EU" : isIncome ? "Bán sỉ" : "Phí Etsy"}" maxlength="150" required aria-label="Tên ${label} mới" />
+            <input name="name" placeholder="Tên ${label} mới, ví dụ: ${s.catsMode === "scope" ? "Trong EU" : isIncome ? "Trang sức" : "Phí Etsy"}" maxlength="150" required aria-label="Tên ${label} mới" />
             <button class="btn primary sm" type="submit">${icon("plus", 14)} Thêm</button>
           </form>
           <ul class="cat-list">${rows || `<li class="cat-row muted">Chưa có ${label} nào.</li>`}</ul>
@@ -1016,7 +1116,7 @@ function createRecordsPage(kind) {
     const formEdit = query.get("edit");
     if (!formNew && !formEdit) return null;
     const rec = formEdit ? list().find((x) => x.id === Number(formEdit)) || null : null;
-    if (rec?.source === "ETSY") return null; // Khoản Etsy không có form sửa.
+    if (isEtsyLocked(rec)) return null; // Đơn Etsy không có form sửa (phí quảng cáo Etsy thì có).
     return { rec };
   }
 
@@ -1056,7 +1156,7 @@ function createRecordsPage(kind) {
 
     const scroll = detailScroll();
     root.innerHTML = `
-      <div class="kpis kpis-3" data-slot="kpis">${kpis().map(kpiCardHtml).join("")}</div>
+      <div class="kpis${isIncome ? "" : " kpis-3"}" data-slot="kpis">${kpis().map(kpiCardHtml).join("")}</div>
       <article class="card" style="padding: 0">
         <div class="card-head list-card-head">
           <div class="list-card-left">
@@ -1073,7 +1173,7 @@ function createRecordsPage(kind) {
           </div>
           <div class="list-card-actions">
             ${isIncome ? `<button class="btn ghost sm etsy-btn" type="button" data-action="etsy-open">${icon("store")} Đồng bộ Etsy${store.etsyAuto?.enabled ? '<span class="etsy-auto-badge" title="Đang bật đồng bộ tự động">Tự động</span>' : ""}</button>` : ""}
-            <button class="btn ghost sm" type="button" data-action="open-cats">${icon("tags")} ${isIncome ? "Loại thu" : "Loại chi"}</button>
+            <button class="btn ghost sm" type="button" data-action="open-cats">${icon("tags")} ${isIncome ? "Nhóm sản phẩm" : "Loại chi"}</button>
             ${isIncome ? "" : `<button class="btn ghost sm" type="button" data-action="open-scopes">${icon("map-pin")} Phạm vi</button>`}
             <button class="btn ghost sm" type="button" data-action="open-cols">${icon("columns-3")} Cột hiển thị</button>
             <button class="btn ghost sm" type="button" data-action="clear-filters">${icon("rotate-ccw")} Xóa bộ lọc</button>
@@ -1293,7 +1393,7 @@ function createRecordsPage(kind) {
       case "close-view": s.viewId = null; render(root); break;
       case "edit": {
         const id = s.viewId;
-        if (list().find((x) => x.id === id)?.source === "ETSY") { toast(ETSY_READONLY); break; }
+        if (isEtsyLocked(list().find((x) => x.id === id))) { toast(ETSY_READONLY); break; }
         s.viewId = null;
         navigate(`${basePath}?edit=${id}`);
         break;
@@ -1392,11 +1492,17 @@ function createRecordsPage(kind) {
       refreshTable();
       return;
     }
-    // Tự tính tiền sau thuế trong form.
+    // Tự tính tiền sau thuế, subtotal và phần trước thuế / thuế của tiền xưởng / ship trong form.
+    const costForm = t.closest('form.record-form, form[data-form="cost"]');
+    if (costForm && (t.name === "costAmount" || t.name === "costTax")) refreshCostSplit(costForm);
     const form = t.closest("form.record-form");
     if (form && (t.name === "amount" || t.name === "taxPercent")) {
       const amount = form.elements.amount.value;
       form.elements.amountAfterTax.value = amount === "" ? "" : afterTax(amount, form.elements.taxPercent.value);
+    }
+    if (form?.elements.subtotal && (t.name === "itemTotal" || t.name === "discountAmount")) {
+      const item = form.elements.itemTotal.value;
+      if (item !== "") form.elements.subtotal.value = round2(Number(item) - (Number(form.elements.discountAmount.value) || 0));
     }
   }
 
@@ -1438,6 +1544,10 @@ function createRecordsPage(kind) {
     const submitBtn = form.querySelector('button[type="submit"]');
     submitBtn.disabled = true;
     const payload = isIncome ? incomePayload(fd, store.ccy) : expensePayload(fd, store.ccy);
+    if (isIncome) {
+      payload.categoryId = await resolveProductGroup(fd.get("productGroup"));
+      if (payload.categoryId === undefined) { submitBtn.disabled = false; return; }
+    }
     const cost = isIncome ? costInputOf(form, store.ccy) : null;
     const saved = await saveRecord(kind, { ...payload, source: rec?.source || "MANUAL" }, rec?.id, s.pendingFiles);
     // Tiền xưởng / tiền ship: lưu sau khi đã có khoản thu (chỉ khi có nhập, hoặc khi bỏ số đã có).
@@ -1459,6 +1569,7 @@ function createRecordsPage(kind) {
   /** Giá trị đang hiện của trường (tiền theo loại tiền đang xem) — dùng làm giá trị ban đầu của ô sửa. */
   function editValue(r, field) {
     const v = field === "date" ? r[dateKey] : r[field];
+    if (field === "categoryId" && isIncome) return r.categoryId == null ? "" : catName(cats(), r.categoryId);
     if (MONEY_FIELDS.includes(field)) return v === 0 || v ? String(toDisplay(v, store.ccy, r[dateKey])) : "";
     if (field === "cost") {
       const cost = costOf(r, store.expenses);
@@ -1472,7 +1583,9 @@ function createRecordsPage(kind) {
     const num = (extra = "") => `<input class="cell-editor" type="number" step="0.01" min="0" value="${v}" ${extra}/>`;
     switch (field) {
       case "date": return `<input class="cell-editor" type="date" value="${v}" />`;
-      case "categoryId": return `<select class="cell-editor">${optionsHtml(cats().map((c) => [c.id, c.name]), r.categoryId)}</select>`;
+      case "categoryId": return isIncome
+        ? `<input class="cell-editor" list="product-groups" autocomplete="off" value="${v}" placeholder="Để trống = ${NO_GROUP}" />${productGroupListHtml()}`
+        : `<select class="cell-editor">${optionsHtml(cats().map((c) => [c.id, c.name]), r.categoryId)}</select>`;
       case "saleRegion": return `<select class="cell-editor">${optionsHtml([["", "—"], ["IN_EU", "Trong EU"], ["OUTSIDE_EU", "Ngoài EU"]], r.saleRegion)}</select>`;
       case "originScope": return `<select class="cell-editor">${optionsHtml([["", "—"], ...SCOPES.map((x) => [x.id, x.name])], r.originScope)}</select>`;
       case "productQty": return `<input class="cell-editor" type="number" min="1" step="1" value="${v}" />`;
@@ -1489,7 +1602,7 @@ function createRecordsPage(kind) {
   function editBlock(r, field) {
     if (!field) return "Cột này tự tính, không sửa trực tiếp được.";
     if (field === "cost") return ""; // tiền xưởng / ship sửa được cả với đơn Etsy; backend kiểm tra khóa sổ theo ngày chi
-    if (r.source === "ETSY") return ETSY_READONLY;
+    if (isEtsyLocked(r) && !(isIncome && field === "categoryId")) return ETSY_READONLY; // nhóm sản phẩm không có từ Etsy
     if (isLocked(r[dateKey])) return lockMessage(r[dateKey]);
     return "";
   }
@@ -1524,7 +1637,8 @@ function createRecordsPage(kind) {
 
   async function commitEdit(r, field, raw) {
     if (raw === editValue(r, field)) { cancelEdit(); return; } // không đổi gì
-    if (REQUIRED_FIELDS.includes(field) && raw === "") { toast("Trường này bắt buộc, không được để trống."); cancelEdit(); return; }
+    // Nhóm sản phẩm của khoản thu được để trống (chưa phân nhóm).
+    if (REQUIRED_FIELDS.includes(field) && !(isIncome && field === "categoryId") && raw === "") { toast("Trường này bắt buộc, không được để trống."); cancelEdit(); return; }
     const { ccy } = store;
     if (field === "cost") {
       const linked = costOf(r, store.expenses).items[0];
@@ -1533,6 +1647,8 @@ function createRecordsPage(kind) {
         amount: fromDisplayNum(raw, ccy, 0, date),
         taxPercent: linked ? Number(linked.taxPercent) || 0 : r.saleRegion === "IN_EU" ? 19 : 0,
         invoiceId: linked?.invoiceId || "",
+        payee: linked?.recipient || "",
+        originScope: linked?.originScope || "",
         date,
       });
       if (ok) await reload(); else cancelEdit();
@@ -1542,7 +1658,10 @@ function createRecordsPage(kind) {
     if (MONEY_FIELDS.includes(field)) value = field === "amount" ? fromDisplayNum(raw, ccy, 0, r[dateKey]) : fromDisplay(raw, ccy, r[dateKey]);
     else if (field === "taxPercent") value = Number(raw || 0);
     else if (field === "productQty") value = raw ? Math.max(1, Math.round(Number(raw))) : null;
-    else if (field === "categoryId") value = Number(raw);
+    else if (field === "categoryId") {
+      value = isIncome ? await resolveProductGroup(raw) : Number(raw);
+      if (value === undefined) { cancelEdit(); return; }
+    }
     const next = { ...r, [field === "date" ? dateKey : field]: value };
     next.amountAfterTax = afterTax(next.amount, next.taxPercent);
     if (!(await saveRecord(kind, next, r.id))) cancelEdit();

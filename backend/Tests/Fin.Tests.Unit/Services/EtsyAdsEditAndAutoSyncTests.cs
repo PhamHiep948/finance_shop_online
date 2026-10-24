@@ -1,0 +1,227 @@
+using System.Text.Json;
+using Fin.Domain.Finance.Constants;
+using Fin.Domain.Finance.Entities;
+using Fin.Infrastructure.Finance.Exceptions;
+using Fin.Infrastructure.Finance.Interfaces;
+using Fin.Infrastructure.Finance.Models;
+using Fin.Infrastructure.Finance.Options;
+using Fin.Model.Dto.Finance.Requests;
+using Fin.Service.Finance.Services;
+using Fin.Service.Finance.UseCases.LedgerEntries.Commands;
+using Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers;
+using Fin.Tests.Unit.Support;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+
+namespace Fin.Tests.Unit.Services
+{
+    // Today is 24/10/2026.
+    public sealed class EtsyAdsEditAndAutoSyncTests
+    {
+        private static readonly FixedTimeProvider Today = new(new DateTime(2026, 10, 24, 10, 0, 0));
+
+        private readonly InMemoryFinanceUnitOfWork _unitOfWork = new InMemoryFinanceUnitOfWork()
+            .WithCategory(CategoryKinds.Expense, "Quảng cáo")
+            .WithCategory(CategoryKinds.Income, "Bán hàng");
+
+        private readonly FakeEtsyClient _etsy = new();
+
+        private long AdsCategory => _unitOfWork.Categories.Single(c => c.Name == "Quảng cáo").Id;
+
+        private LedgerEntry SeedAdsEntry()
+        {
+            var entry = new LedgerEntry
+            {
+                Kind = LedgerKinds.Expense, Date = new DateOnly(2026, 9, 30), Description = "Quảng cáo Etsy tháng 09/2026",
+                CategoryId = AdsCategory, OrderCode = "ADS-2026-09", SalesChannel = SalesValues.ChannelEtsy, Payee = "Etsy",
+                Source = EntrySources.Etsy, Details = new LedgerDetails { ReferenceCode = "ADS-2026-09" },
+            };
+            entry.SetAmounts(8m, 0);
+            _unitOfWork.WithEntry(entry);
+            return entry;
+        }
+
+        private async Task<Fin.Infrastructure.Shared.Wrappers.Response<Fin.Model.Dto.Finance.Responses.LedgerEntryResponse>> UpdateAsync(LedgerEntry entry, LedgerEntryRequest payload)
+        {
+            var periodLock = new PeriodLockPolicy(new StaticOptionsMonitor<PeriodLockOptions>(new PeriodLockOptions { Enabled = false }), Today);
+            return await new UpdateLedgerEntryHandler(_unitOfWork, periodLock, new AuditTrail(_unitOfWork))
+                .Handle(new UpdateLedgerEntryCommand { Kind = entry.Kind, Id = entry.Id, Payload = payload }, CancellationToken.None);
+        }
+
+        // ---- Sửa khoản quảng cáo Etsy
+
+        [Fact]
+        public async Task The_amount_of_an_etsy_ad_expense_can_be_corrected()
+        {
+            var entry = SeedAdsEntry();
+
+            // The expense form does not send the order code or channel.
+            var result = await UpdateAsync(entry, new LedgerEntryRequest
+            {
+                Date = "2026-09-30", Description = "Quảng cáo Etsy tháng 09/2026 (đã trừ hoàn phí)", CategoryId = AdsCategory,
+                Amount = 9.5m, TaxPercent = 19m, Payee = "Etsy", Note = "Sửa theo sao kê",
+            });
+
+            Assert.True(result.Succeeded, result.Message);
+            Assert.Equal((9.5m, 19m, 11.31m), (entry.Amount, entry.TaxPercent, entry.AmountAfterTax));
+            Assert.Equal("Quảng cáo Etsy tháng 09/2026 (đã trừ hoàn phí)", entry.Description);
+            Assert.Equal("Sửa theo sao kê", entry.Details.Note);
+        }
+
+        [Fact]
+        public async Task Editing_keeps_the_etsy_identity_so_the_month_is_not_imported_again()
+        {
+            var entry = SeedAdsEntry();
+
+            await UpdateAsync(entry, new LedgerEntryRequest { Date = "2026-09-30", Description = "QC", CategoryId = AdsCategory, Amount = 9.5m });
+
+            Assert.Equal(("ADS-2026-09", SalesValues.ChannelEtsy, EntrySources.Etsy), (entry.OrderCode, entry.SalesChannel, entry.Source));
+            _etsy.LedgerEntries.Add(new EtsyLedgerEntry(1, new DateOnly(2026, 9, 3), "PROLIST", "Etsy Ads", -8m, "USD"));
+            var importer = new EtsyAdsImporter(_unitOfWork, _etsy, new AuditTrail(_unitOfWork), EtsyOptionsFor.Shop(), Today);
+            var again = await importer.ImportAsync([new DateOnly(2026, 9, 1)], "test", CancellationToken.None);
+            Assert.Equal(0, again.Imported);
+            Assert.Single(_unitOfWork.Entries, e => e.OrderCode == "ADS-2026-09");
+        }
+
+        [Fact]
+        public async Task The_history_keeps_the_original_etsy_amount()
+        {
+            var entry = SeedAdsEntry();
+
+            await UpdateAsync(entry, new LedgerEntryRequest { Date = "2026-09-30", Description = entry.Description, CategoryId = AdsCategory, Amount = 9.5m });
+
+            var log = Assert.Single(_unitOfWork.AuditLogs);
+            Assert.Equal(AuditActions.Update, log.Action);
+            using var changes = JsonDocument.Parse(log.Changes!);
+            var amount = changes.RootElement.GetProperty("amount");
+            // The history stores values as text.
+            Assert.Equal(8m, decimal.Parse(amount.GetProperty("from").GetString()!, System.Globalization.CultureInfo.InvariantCulture));
+            Assert.Equal(9.5m, decimal.Parse(amount.GetProperty("to").GetString()!, System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        [Fact]
+        public async Task An_etsy_order_still_only_takes_its_product_group()
+        {
+            var order = new LedgerEntry
+            {
+                Kind = LedgerKinds.Income, Date = new DateOnly(2026, 9, 3), Description = "Lilie", OrderCode = "4136894034",
+                SalesChannel = SalesValues.ChannelEtsy, Source = EntrySources.Etsy,
+            };
+            order.SetAmounts(20m, 0);
+            _unitOfWork.WithEntry(order);
+            var group = _unitOfWork.Categories.Single(c => c.Name == "Bán hàng").Id;
+
+            await UpdateAsync(order, new LedgerEntryRequest { Date = "2026-09-03", Description = "Đổi tên", CategoryId = group, Amount = 999m });
+
+            Assert.Equal((group, 20m, "Lilie"), (order.CategoryId, order.Amount, order.Description));
+        }
+
+        // ---- Đồng bộ tự động nhập phí quảng cáo
+
+        private sealed class MemoryStateStore : IEtsyAutoSyncStateStore
+        {
+            public EtsyAutoSyncState State { get; } = new() { Enabled = true, LookbackDays = 14 };
+            public EtsyAutoSyncState Load() => State;
+            public void Save(EtsyAutoSyncState state) { }
+        }
+
+        private (EtsyAutoSyncRunner Runner, MemoryStateStore Store) Runner()
+        {
+            var services = new ServiceCollection()
+                .AddSingleton<IFinanceUnitOfWork>(_unitOfWork)
+                .AddSingleton<IEtsyClient>(_etsy)
+                .AddSingleton<IOptionsMonitor<EtsyOptions>>(EtsyOptionsFor.Shop())
+                .AddSingleton<TimeProvider>(Today)
+                .AddScoped<AuditTrail>()
+                .AddScoped<EtsyOrderImporter>()
+                .AddScoped<EtsyAdsImporter>()
+                .BuildServiceProvider();
+            var store = new MemoryStateStore();
+            var runner = new EtsyAutoSyncRunner(services.GetRequiredService<IServiceScopeFactory>(), _etsy, store,
+                EtsyOptionsFor.Shop(), Today, NullLogger<EtsyAutoSyncRunner>.Instance);
+            return (runner, store);
+        }
+
+        private void SeedEtsy()
+        {
+            _etsy.Receipts.Add(new EtsyReceipt("5001", new DateOnly(2026, 10, 20), "USD", [new EtsyReceiptItem("Lilie", 1, 1)], 20m, 0, 20m, 0, 0, "US", 0));
+            _etsy.LedgerEntries.AddRange([
+                new EtsyLedgerEntry(1, new DateOnly(2026, 8, 3), "PROLIST", "Etsy Ads", -4m, "USD"),
+                new EtsyLedgerEntry(2, new DateOnly(2026, 9, 3), "PROLIST", "Etsy Ads", -7m, "USD"),
+                new EtsyLedgerEntry(3, new DateOnly(2026, 10, 3), "PROLIST", "Etsy Ads", -2m, "USD"),
+            ]);
+        }
+
+        [Fact]
+        public async Task Once_a_month_is_over_its_ad_spend_is_written_even_with_order_sync_off()
+        {
+            SeedEtsy();
+            var (runner, store) = Runner();
+            store.State.Enabled = false;
+
+            Assert.True(runner.IsAdsDue());
+            await runner.RunAdsAsync(CancellationToken.None);
+
+            Assert.Equal((1, "2026-09", (string?)null), (store.State.LastAdsImported, store.State.AdsMonthDone, store.State.AdsError));
+            var ads = Assert.Single(_unitOfWork.Entries);
+            Assert.Equal(("ADS-2026-09", 7m, new DateOnly(2026, 9, 30)), (ads.OrderCode, ads.Amount, ads.Date));
+            // Older months (August) and the running month (October) are left alone.
+            Assert.Equal((new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 30)), Assert.Single(_etsy.LedgerRanges));
+            Assert.Equal("2026-09", runner.Status().AdsMonthDone);
+        }
+
+        [Fact]
+        public async Task A_written_month_is_not_tried_again()
+        {
+            SeedEtsy();
+            var (runner, _) = Runner();
+
+            await runner.RunAdsAsync(CancellationToken.None);
+
+            Assert.False(runner.IsAdsDue());
+        }
+
+        [Fact]
+        public async Task A_month_without_ads_is_still_marked_done()
+        {
+            var (runner, store) = Runner();
+
+            await runner.RunAdsAsync(CancellationToken.None);
+
+            Assert.Equal((0, "2026-09"), (store.State.LastAdsImported, store.State.AdsMonthDone));
+            Assert.Empty(_unitOfWork.Entries);
+            Assert.False(runner.IsAdsDue());
+        }
+
+        [Fact]
+        public async Task A_failure_is_reported_and_retried_an_hour_later()
+        {
+            SeedEtsy();
+            _etsy.LedgerError = new EtsyException("Etsy không cho đọc sổ thu chi Etsy Payments của shop 777");
+            var (runner, store) = Runner();
+
+            await runner.RunAdsAsync(CancellationToken.None);
+
+            Assert.Null(store.State.AdsMonthDone);
+            Assert.Contains("Etsy Payments", store.State.AdsError);
+            Assert.False(runner.IsAdsDue());
+            store.State.AdsLastRunAt = store.State.AdsLastRunAt!.Value.AddHours(-1);
+            Assert.True(runner.IsAdsDue());
+        }
+
+        [Fact]
+        public async Task The_order_sync_no_longer_writes_ad_spend()
+        {
+            SeedEtsy();
+            var (runner, store) = Runner();
+
+            await runner.RunOnceAsync(CancellationToken.None);
+
+            Assert.Equal(1, store.State.LastImported);
+            Assert.Single(_unitOfWork.Entries);
+            Assert.Equal(LedgerKinds.Income, _unitOfWork.Entries[0].Kind);
+            Assert.Empty(_etsy.LedgerRanges);
+        }
+    }
+}

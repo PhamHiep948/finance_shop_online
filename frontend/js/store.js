@@ -23,7 +23,7 @@ const store = {
   // Khóa sổ theo quý hoặc tháng (lấy từ backend /settings).
   lock: { enabled: false, period: "QUARTER", graceDays: 1, today: localISO(new Date()) },
   // Trạng thái đồng bộ Etsy tự động (app.js hỏi backend mỗi phút); autoSeen = lần chạy đã báo cho người dùng.
-  etsyAuto: null, etsyAutoSeen: undefined,
+  etsyAuto: null, etsyAutoSeen: undefined, etsyAdsSeen: undefined,
 };
 
 /** Số tháng của một kỳ khóa sổ (quý = 3, tháng = 1). */
@@ -97,13 +97,14 @@ function toast(msg, action) {
 
 /** Lấy tỷ giá USD/EUR mới nhất từ backend; lỗi thì giữ tỷ giá tạm. */
 async function loadFx() {
-  const [fx, monthly] = await Promise.all([api("/fx").catch(() => null), api("/fx/monthly").catch(() => null)]);
+  const [fx, monthly, daily] = await Promise.all([api("/fx").catch(() => null), api("/fx/monthly").catch(() => null), api("/fx/daily").catch(() => null)]);
   // Không có mạng / backend chưa chạy: giữ tỷ giá tạm.
   if (fx?.usdToEur > 0) {
     FX_USD_TO_EUR = fx.usdToEur;
     FX_DATE = fx.auto ? fx.date : "";
   }
   if (Array.isArray(monthly)) FX_MONTHLY = Object.fromEntries(monthly.map((r) => [r.month, Number(r.eurToUsd)]));
+  if (Array.isArray(daily)) FX_DAILY = Object.fromEntries(daily.map((r) => [r.date, Number(r.eurToUsd)]));
   emitStore();
 }
 
@@ -131,10 +132,32 @@ async function reload() {
   }
 }
 
+const RECORD_MONEY_FIELDS = ["amount", "unitPrice", "itemTotal", "discountAmount", "subtotal", "shippingAmount", "taxAmount"];
+
+/**
+ * Số tiền người dùng không sửa thì giữ đúng số USD đã lưu. Xem bằng EUR, số hiện ra đã làm tròn theo EUR;
+ * đổi ngược sang USD rồi làm tròn lần nữa có thể lệch 1 cent dù không ai sửa gì.
+ * Số trước thuế và % thuế không đổi thì giữ luôn số sau thuế đã lưu (có thể là số tiền thực nhận / thực trả).
+ */
+function keepUnchangedMoney(previous, payload, dateKey) {
+  const date = payload[dateKey] || previous[dateKey];
+  const next = { ...payload };
+  RECORD_MONEY_FIELDS.forEach((f) => {
+    if (!(f in next) || previous[f] == null || previous[f] === "") return;
+    const shown = fromDisplay(toDisplay(previous[f], store.ccy, date), store.ccy, date);
+    if (next[f] != null && Number(next[f]) === shown) next[f] = Number(previous[f]);
+  });
+  if (Number(next.amount) === Number(previous.amount) && Number(next.taxPercent) === Number(previous.taxPercent)) {
+    next.amountAfterTax = afterTaxOf(previous);
+  }
+  return next;
+}
+
 /** Lưu khoản thu/chi, rồi tải lên các chứng từ `files` (nếu có). Trả về bản ghi đã lưu hoặc null. */
 async function saveRecord(kind, payload, id, files = []) {
   const config = KIND[kind];
   const previous = id ? (kind === "income" ? store.incomes : store.expenses).find((r) => r.id === id) : null;
+  if (previous) payload = keepUnchangedMoney(previous, payload, config.dateKey);
   const body = bodyOf(config.dateKey, { salesChannel: previous?.salesChannel, paymentMethod: previous?.paymentMethod, ...payload });
   let saved;
   try {
@@ -168,7 +191,7 @@ function deleteAttachment(attachmentId) {
   return api(`/attachments/${attachmentId}`, { method: "DELETE" });
 }
 
-// ---- Loại thu / loại chi
+// ---- Nhóm sản phẩm (khoản thu) / loại chi
 async function categoryAction(kind, method, id, name) {
   try {
     await api(`/categories/${kind}${id ? `/${id}` : ""}`, { method, body: name === undefined ? undefined : { name } });
@@ -211,7 +234,7 @@ const updateGroup = (id, patch) => groupAction("PUT", id, patch);
 const removeGroup = (id) => groupAction("DELETE", id);
 
 // ---- Tiền xưởng / tiền ship của khoản thu (lưu thành khoản chi gắn với khoản thu)
-// `cost` = { amount (đã trả, gồm thuế, USD), taxPercent, invoiceId, date }; amount 0 = bỏ.
+// `cost` = { amount (đã trả, gồm thuế, USD), taxPercent, invoiceId, payee, originScope, date }; amount 0 = bỏ.
 const setIncomeCost = (incomeId, cost) => api(`/incomes/${incomeId}/cost`, { method: "PUT", body: cost });
 
 // ---- Thùng rác
@@ -240,6 +263,8 @@ function listAudit(params) {
 const etsyStatus = () => api("/etsy/status");
 const etsyOrders = (from, to) => api(`/etsy/orders?from=${from}&to=${to}`);
 const etsyImport = (orders) => api("/etsy/import", { method: "POST", body: { orders } });
+const etsyListings = (from, to) => api(`/etsy/listings?from=${from}&to=${to}`);
+const etsyFees = (from, to) => api(`/etsy/fees?from=${from}&to=${to}`);
 const etsyDisconnect = () => api("/etsy/disconnect", { method: "POST" });
 // Đồng bộ tự động (backend tự lấy đơn mới theo chu kỳ).
 const etsyAutoSync = () => api("/etsy/autosync");
@@ -251,6 +276,9 @@ const fxMonthly = () => api("/fx/monthly");
 const fxMonths = (from, to) => api(`/fx/months?from=${from}&to=${to}`);
 const setFxMonthly = (month, eurToUsd) => api(`/fx/monthly/${month}`, { method: "PUT", body: { eurToUsd } });
 const deleteFxMonthly = (month) => api(`/fx/monthly/${month}`, { method: "DELETE" });
+const fxDays = (month) => api(`/fx/days?month=${month}`);
+const setFxDaily = (date, eurToUsd) => api(`/fx/daily/${date}`, { method: "PUT", body: { eurToUsd } });
+const deleteFxDaily = (date) => api(`/fx/daily/${date}`, { method: "DELETE" });
 
 function incomePayload(fd, ccy) {
   // Quy đổi theo tỷ giá của tháng chứa ngày thu / ngày chi (giống lúc hiển thị).
@@ -258,7 +286,7 @@ function incomePayload(fd, ccy) {
   return {
     incomeDate: fd.get("incomeDate"),
     description: fd.get("description"),
-    categoryId: Number(fd.get("categoryId")),
+    categoryId: null, // nhóm sản phẩm: trang đổi tên nhóm gõ vào thành id rồi gán (resolveProductGroup)
     amount: fromDisplayNum(fd.get("amount"), ccy, 0, d),
     currency: "USD",
     referenceCode: fd.get("referenceCode"),

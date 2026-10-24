@@ -88,11 +88,15 @@ Mỗi khoản (`LedgerEntryResponse`) gồm: `id, kind, date, description, categ
 
 | Method | Đường dẫn | Use case | Ghi chú |
 |---|---|---|---|
-| GET | `/fx` | `GetCurrentRateQuery` | `{ eurToUsd, usdToEur, date, auto, manual }` — tỷ giá tự nhập tháng này, không có thì ECB |
+| GET | `/fx` | `GetCurrentRateQuery` | `{ eurToUsd, usdToEur, date, auto, manual }` — tỷ giá tự nhập riêng hôm nay, rồi tỷ giá tự nhập tháng này, không có thì ECB |
 | GET | `/fx/monthly` | `GetMonthlyRatesQuery` | `[{ month, eurToUsd }]` |
 | GET | `/fx/months?from=yyyy-MM&to=yyyy-MM` | `GetRateTableQuery` | `[{ month, manual, ecb }]`, tối đa 36 tháng |
 | PUT | `/fx/monthly/{yyyy-MM}` | `SetMonthlyRateCommand` | body `{ eurToUsd }` trong khoảng 0,5 – 3 |
 | DELETE | `/fx/monthly/{yyyy-MM}` | `DeleteMonthlyRateCommand` | |
+| GET | `/fx/daily` | `GetDailyRatesQuery` | `[{ date, eurToUsd }]` — mọi tỷ giá tự nhập riêng theo ngày |
+| GET | `/fx/days?month=yyyy-MM` | `GetDayTableQuery` | `[{ date, manual, monthly, ecb, used, source }]` từng ngày của tháng; `source` = `DAILY` / `MONTHLY` / `DEFAULT` |
+| PUT | `/fx/daily/{yyyy-MM-dd}` | `SetDailyRateCommand` | body `{ eurToUsd }` trong khoảng 0,5 – 3; ngày này quy đổi theo số này thay cho tỷ giá tháng |
+| DELETE | `/fx/daily/{yyyy-MM-dd}` | `DeleteDailyRateCommand` | quay về tỷ giá tháng; không có → `FX_ERR_005` |
 
 ### Etsy
 
@@ -104,9 +108,11 @@ Mỗi khoản (`LedgerEntryResponse`) gồm: `id, kind, date, description, categ
 | POST | `/etsy/disconnect` | `DisconnectEtsyCommand` | |
 | GET | `/etsy/orders?from&to` | `GetEtsyOrdersQuery` | ngày `yyyy-MM-dd`, tối đa 1 năm; mỗi đơn có `imported` |
 | POST | `/etsy/import` | `ImportEtsyOrdersCommand` | body `{ orders }` → `{ imported, skipped }` |
+| GET | `/etsy/listings?from&to` | `GetEtsyListingsQuery` | sản phẩm đang bán / hết hàng, xếp theo lượt xem; `views`, `favorites` là tổng từ lúc đăng, `sold`, `orders` tính trong `from`–`to` (yyyy-MM-dd, ≤ 1 năm). Cần quyền `listings_r` |
+| GET | `/etsy/fees?from&to` | `GetEtsyFeesQuery` | tháng yyyy-MM (≤ 24 tháng) → `{ months: [{ month, etsyAds, offsiteAds, refunds, ads, currency, adsUsd, complete, imported }], types: [{ ledgerType, description, count, amount, isAds }] }` lấy từ sổ Etsy Payments |
 | GET | `/etsy/autosync` | `GetEtsyAutoSyncQuery` | `{ enabled, intervalMinutes, lookbackDays, lastRunAt, lastImported, totalImported, lastError, running, ready, nextRunAt, intervals }` |
 | PUT | `/etsy/autosync` | `ConfigureEtsyAutoSyncCommand` | body `{ enabled, intervalMinutes }` (15, 30, 60, 360, 1440) |
-| POST | `/etsy/autosync/run` | `RunEtsyAutoSyncCommand` | chạy ngay; chưa kết nối → `ETS_ERR_001` |
+| POST | `/etsy/autosync/run` | `RunEtsyAutoSyncCommand` | chạy ngay; chưa kết nối → `ETS_ERR_001`. Mỗi lần chạy nhập đơn mới (`lastImported`). Riêng tiền quảng cáo: hễ Etsy đã kết nối, sang tháng mới backend tự ghi tháng vừa hết thành một khoản chi "Quảng cáo" (mã `ADS-yyyy-MM`, sửa được ở Khoản chi), lỗi thì thử lại mỗi giờ (`adsMonthDone`, `lastAdsImported`, `adsError`) |
 
 ## Mã lỗi (`ErrorCodeEnum`)
 

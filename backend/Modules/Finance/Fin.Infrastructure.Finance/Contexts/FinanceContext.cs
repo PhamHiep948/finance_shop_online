@@ -15,7 +15,9 @@ namespace Fin.Infrastructure.Finance.Contexts
         public DbSet<Attachment> Attachments => Set<Attachment>();
         public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
         public DbSet<FxMonthlyRate> FxMonthlyRates => Set<FxMonthlyRate>();
+        public DbSet<FxDailyRate> FxDailyRates => Set<FxDailyRate>();
         public DbSet<CategoryGroup> CategoryGroups => Set<CategoryGroup>();
+        public DbSet<Translation> Translations => Set<Translation>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

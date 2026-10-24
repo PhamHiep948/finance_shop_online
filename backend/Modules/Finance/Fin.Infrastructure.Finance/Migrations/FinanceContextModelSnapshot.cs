@@ -193,6 +193,30 @@ namespace Fin.Infrastructure.Finance.Migrations
                     b.ToTable("category_groups", (string)null);
                 });
 
+            modelBuilder.Entity("Fin.Domain.Finance.Entities.FxDailyRate", b =>
+                {
+                    b.Property<DateOnly>("Date")
+                        .HasColumnType("date")
+                        .HasColumnName("date");
+
+                    b.Property<decimal>("EurToUsd")
+                        .HasPrecision(12, 6)
+                        .HasColumnType("decimal(12,6)")
+                        .HasColumnName("eur_to_usd");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("datetime")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlComputedColumn(b.Property<DateTime>("UpdatedAt"));
+
+                    b.HasKey("Date");
+
+                    b.ToTable("fx_daily", (string)null);
+                });
+
             modelBuilder.Entity("Fin.Domain.Finance.Entities.FxMonthlyRate", b =>
                 {
                     b.Property<string>("Month")
@@ -236,7 +260,7 @@ namespace Fin.Infrastructure.Finance.Migrations
                         .HasColumnType("decimal(18,2)")
                         .HasColumnName("amount_after_tax");
 
-                    b.Property<ulong>("CategoryId")
+                    b.Property<ulong?>("CategoryId")
                         .HasColumnType("bigint unsigned")
                         .HasColumnName("category_id");
 
@@ -347,6 +371,46 @@ namespace Fin.Infrastructure.Finance.Migrations
                     b.ToTable("ledger_entries", (string)null);
                 });
 
+            modelBuilder.Entity("Fin.Domain.Finance.Entities.Translation", b =>
+                {
+                    b.Property<string>("SourceHash")
+                        .HasColumnType("char(64)")
+                        .HasColumnName("source_hash");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime")
+                        .HasColumnName("created_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("De")
+                        .HasMaxLength(2000)
+                        .HasColumnType("varchar(2000)")
+                        .HasColumnName("de");
+
+                    b.Property<bool>("Ignored")
+                        .HasColumnType("tinyint(1)")
+                        .HasColumnName("ignored");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("varchar(1000)")
+                        .HasColumnName("source");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("datetime")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlComputedColumn(b.Property<DateTime>("UpdatedAt"));
+
+                    b.HasKey("SourceHash");
+
+                    b.ToTable("translations", (string)null);
+                });
+
             modelBuilder.Entity("Fin.Domain.Finance.Entities.Attachment", b =>
                 {
                     b.HasOne("Fin.Domain.Finance.Entities.LedgerEntry", "Entry")
@@ -365,7 +429,6 @@ namespace Fin.Infrastructure.Finance.Migrations
                         .WithMany()
                         .HasForeignKey("CategoryId")
                         .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired()
                         .HasConstraintName("fk_ledger_category");
                 });
 

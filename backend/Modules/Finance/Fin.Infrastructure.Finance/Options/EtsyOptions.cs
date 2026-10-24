@@ -8,8 +8,9 @@ namespace Fin.Infrastructure.Finance.Options
         public string SharedSecret { get; set; } = string.Empty;
         public string ShopId { get; set; } = string.Empty;
         public string RedirectUri { get; set; } = "http://localhost:5000/api/v1/etsy/callback";
-        public long DefaultCategoryId { get; set; } = 1;
         public decimal EurToUsd { get; set; } = 1.087m;
         public decimal EuVatPercent { get; set; } = 19m;
+        // Extra Etsy Payments ledger types to count as advertising, on top of the built-in Etsy Ads / Offsite Ads ones.
+        public string[] AdLedgerTypes { get; set; } = [];
     }
 }

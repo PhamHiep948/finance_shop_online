@@ -1,3 +1,4 @@
+using Fin.Domain.Finance.Constants;
 using Fin.Domain.Finance.Entities;
 using Fin.Model.Dto.Finance.Requests;
 using Fin.Model.Dto.Finance.Responses;
@@ -22,7 +23,7 @@ namespace Fin.Infrastructure.Finance.Interfaces
 
         Task<List<LedgerEntry>> GetLinkedExpensesAsync(long incomeId, bool deleted, CancellationToken cancellationToken);
 
-        Task<HashSet<string>> GetExistingOrderCodesAsync(string salesChannel, IReadOnlyCollection<string> orderCodes, CancellationToken cancellationToken);
+        Task<HashSet<string>> GetExistingOrderCodesAsync(string salesChannel, IReadOnlyCollection<string> orderCodes, CancellationToken cancellationToken, string kind = LedgerKinds.Income);
 
         void Add(LedgerEntry entry);
 

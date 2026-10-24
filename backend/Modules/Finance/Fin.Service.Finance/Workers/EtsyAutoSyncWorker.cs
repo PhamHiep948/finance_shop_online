@@ -24,6 +24,10 @@ namespace Fin.Service.Finance.Workers
                 {
                     await _runner.RunOnceAsync(stoppingToken);
                 }
+                if (_runner.IsAdsDue())
+                {
+                    await _runner.RunAdsAsync(stoppingToken);
+                }
             }
             while (await timer.WaitForNextTickAsync(stoppingToken));
         }

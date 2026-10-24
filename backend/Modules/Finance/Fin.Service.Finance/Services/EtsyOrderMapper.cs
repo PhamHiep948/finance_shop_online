@@ -17,18 +17,23 @@ namespace Fin.Service.Finance.Services
             "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE",
         ];
 
-        public static EtsyOrderDto Map(EtsyReceipt receipt, IReadOnlyDictionary<string, decimal> monthlyRates, decimal euVatPercent)
+        public static EtsyOrderDto Map(EtsyReceipt receipt, IReadOnlyDictionary<string, decimal> monthlyRates, decimal euVatPercent) =>
+            Map(receipt, new FxRateBook(monthlyRates), euVatPercent);
+
+        public static EtsyOrderDto Map(EtsyReceipt receipt, FxRateBook rates, decimal euVatPercent)
         {
             var isEur = receipt.Currency.Equals("EUR", StringComparison.OrdinalIgnoreCase);
-            var monthKey = receipt.Created.ToString(FinanceConstants.MonthFormat, CultureInfo.InvariantCulture);
             var monthLabel = receipt.Created.ToString("MM/yyyy", CultureInfo.InvariantCulture);
-            // A month without a typed rate (not published yet) converts at 1 EUR = 1 USD until the user enters it.
-            var hasManualRate = monthlyRates.TryGetValue(monthKey, out var manualRate) && manualRate > 0;
-            var rate = isEur && hasManualRate ? manualRate : 1m;
+            var dayLabel = receipt.Created.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture);
+            // A day with its own typed rate uses it; otherwise the month's rate; a month without one converts at
+            // 1 EUR = 1 USD until the user enters it.
+            var (bookRate, source) = rates.EurToUsd(receipt.Created);
+            var rate = isEur ? bookRate : 1m;
             decimal Usd(decimal value) => decimal.Round(value * rate, 2, MidpointRounding.AwayFromZero);
 
             var subtotal = receipt.Subtotal == 0 ? receipt.TotalPrice - receipt.Discount : receipt.Subtotal;
-            var received = Usd(subtotal) + Usd(receipt.Shipping);
+            // Convert the sum once: rounding subtotal and shipping separately could add a stray cent.
+            var received = Usd(subtotal + receipt.Shipping);
             var isEu = EuCountries.Contains(receipt.Country.ToUpperInvariant());
 
             decimal amount, afterTax, taxPercent, taxUsd;
@@ -45,11 +50,16 @@ namespace Fin.Service.Finance.Services
                 amount = received;
                 taxUsd = Usd(receipt.Tax);
                 taxPercent = amount == 0 ? 0 : decimal.Round(taxUsd / amount * 100, 2);
-                afterTax = LedgerEntry.AfterTax(amount, taxPercent);
+                // The tax Etsy collected is exact; recomputing it from the rounded percent would round twice.
+                afterTax = amount + taxUsd;
             }
 
             var notes = new List<string>();
-            if (isEur && hasManualRate)
+            if (isEur && source == FxRateSource.Daily)
+            {
+                notes.Add($"Quy đổi từ EUR theo tỷ giá tự nhập ngày {dayLabel}: 1 EUR = {rate.ToString(CultureInfo.InvariantCulture)} USD.");
+            }
+            else if (isEur && source == FxRateSource.Monthly)
             {
                 notes.Add($"Quy đổi từ EUR theo tỷ giá tự nhập tháng {monthLabel}: 1 EUR = {rate.ToString(CultureInfo.InvariantCulture)} USD.");
             }

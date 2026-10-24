@@ -15,7 +15,7 @@ namespace Fin.Infrastructure.Finance.Contexts.Configurations
             builder.Property(x => x.Kind).HasColumnName("kind").HasMaxLength(10).IsRequired();
             builder.Property(x => x.Date).HasColumnName("date").HasColumnType("date");
             builder.Property(x => x.Description).HasColumnName("description").HasMaxLength(500).IsRequired();
-            builder.Property(x => x.CategoryId).HasColumnName("category_id").HasConversion<ulong>();
+            builder.Property(x => x.CategoryId).HasColumnName("category_id").HasConversion<ulong?>();
             builder.Property(x => x.Amount).HasColumnName("amount").HasPrecision(18, 2);
             builder.Property(x => x.TaxPercent).HasColumnName("tax_percent").HasPrecision(6, 2);
             builder.Property(x => x.AmountAfterTax).HasColumnName("amount_after_tax").HasPrecision(18, 2);
@@ -47,6 +47,7 @@ namespace Fin.Infrastructure.Finance.Contexts.Configurations
 
             builder.Ignore(x => x.IsDeleted);
             builder.Ignore(x => x.IsFromEtsy);
+            builder.Ignore(x => x.IsEtsyAds);
 
             builder.HasIndex(x => new { x.Kind, x.Date }).HasDatabaseName("idx_kind_date");
             builder.HasIndex(x => x.LinkedIncomeId).HasDatabaseName("idx_linked_income");

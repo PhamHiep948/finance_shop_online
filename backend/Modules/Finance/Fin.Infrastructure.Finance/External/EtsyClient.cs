@@ -20,6 +20,11 @@ namespace Fin.Infrastructure.Finance.External
         private const string ApiBase = "https://openapi.etsy.com/v3/application";
         private const string SettingsFile = "backend/Host/Fin.Host.Api/etsy.settings.json";
         private const int PageSize = 100;
+        // listings_r: product views and favorites; transactions_r also covers the Etsy Payments ledger (fees, ads).
+        private const string Scopes = "transactions_r shops_r listings_r";
+        // Etsy Payments ledger amounts are integers in the smallest currency unit (cents).
+        private const decimal LedgerDivisor = 100m;
+        private static readonly string[] ListingStates = ["active", "sold_out"];
 
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IOptionsMonitor<EtsyOptions> _options;
@@ -76,7 +81,7 @@ namespace Fin.Infrastructure.Finance.External
             {
                 ["response_type"] = "code",
                 ["redirect_uri"] = Settings.RedirectUri,
-                ["scope"] = "transactions_r shops_r",
+                ["scope"] = Scopes,
                 ["client_id"] = Settings.ApiKey.Trim(),
                 ["state"] = state,
                 ["code_challenge"] = challenge,
@@ -122,46 +127,82 @@ namespace Fin.Infrastructure.Finance.External
 
         public async Task<IReadOnlyList<EtsyReceipt>> GetPaidReceiptsAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
         {
+            var (min, max) = UnixRange(from, to);
+            var receipts = new List<EtsyReceipt>();
+            await ReadPagesAsync("đơn",
+                (shopId, offset) => $"{ApiBase}/shops/{shopId}/receipts?min_created={min}&max_created={max}&was_paid=true&was_canceled=false&limit={PageSize}&offset={offset}",
+                receipt =>
+                {
+                    // Canceled and fully refunded orders are no longer revenue.
+                    var status = receipt.TryGetProperty("status", out var st) ? st.GetString()?.ToLowerInvariant() : null;
+                    if (status is not ("canceled" or "fully refunded"))
+                    {
+                        receipts.Add(MapReceipt(receipt));
+                    }
+                },
+                cancellationToken);
+            return receipts;
+        }
+
+        public async Task<IReadOnlyList<EtsyListing>> GetListingsAsync(CancellationToken cancellationToken)
+        {
+            var listings = new List<EtsyListing>();
+            foreach (var state in ListingStates)
+            {
+                await ReadPagesAsync("sản phẩm",
+                    (shopId, offset) => $"{ApiBase}/shops/{shopId}/listings?state={state}&includes=Images&limit={PageSize}&offset={offset}",
+                    listing => listings.Add(MapListing(listing)),
+                    cancellationToken);
+            }
+            return listings;
+        }
+
+        public async Task<IReadOnlyList<EtsyLedgerEntry>> GetLedgerEntriesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
+        {
+            var (min, max) = UnixRange(from, to);
+            var entries = new List<EtsyLedgerEntry>();
+            await ReadPagesAsync("sổ thu chi Etsy Payments",
+                (shopId, offset) => $"{ApiBase}/shops/{shopId}/payment-account/ledger-entries?min_created={min}&max_created={max}&limit={PageSize}&offset={offset}",
+                entry => entries.Add(MapLedgerEntry(entry)),
+                cancellationToken);
+            return entries;
+        }
+
+        private static (long Min, long Max) UnixRange(DateOnly from, DateOnly to) =>
+            (new DateTimeOffset(from.ToDateTime(TimeOnly.MinValue)).ToUnixTimeSeconds(),
+             new DateTimeOffset(to.ToDateTime(TimeOnly.MaxValue)).ToUnixTimeSeconds());
+
+        // Reads every page of a shop collection; `what` names the data in error messages.
+        private async Task ReadPagesAsync(string what, Func<string, int, string> url, Action<JsonElement> onItem, CancellationToken cancellationToken)
+        {
             EnsureKeys();
             var token = await GetTokenAsync(cancellationToken);
             var shopId = !string.IsNullOrWhiteSpace(Settings.ShopId) ? Settings.ShopId : token.ShopId ?? await DetectShopIdAsync(token, cancellationToken);
             using var client = CreateApiClient(token.AccessToken);
-            var min = new DateTimeOffset(from.ToDateTime(TimeOnly.MinValue)).ToUnixTimeSeconds();
-            var max = new DateTimeOffset(to.ToDateTime(TimeOnly.MaxValue)).ToUnixTimeSeconds();
-            var receipts = new List<EtsyReceipt>();
 
             for (var offset = 0; ; offset += PageSize)
             {
-                var url = $"{ApiBase}/shops/{Uri.EscapeDataString(shopId)}/receipts?min_created={min}&max_created={max}&was_paid=true&was_canceled=false&limit={PageSize}&offset={offset}";
-                using var response = await client.GetAsync(url, cancellationToken);
+                using var response = await client.GetAsync(url(Uri.EscapeDataString(shopId), offset), cancellationToken);
                 var body = await response.Content.ReadAsStringAsync(cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
-                    throw ReceiptsError(response.StatusCode, body, shopId);
+                    throw ApiError(response.StatusCode, body, shopId, what);
                 }
 
                 using var doc = JsonDocument.Parse(body);
                 var results = doc.RootElement.GetProperty("results");
-                foreach (var receipt in results.EnumerateArray())
+                foreach (var item in results.EnumerateArray())
                 {
-                    // Canceled and fully refunded orders are no longer revenue.
-                    var status = receipt.TryGetProperty("status", out var st) ? st.GetString()?.ToLowerInvariant() : null;
-                    if (status is "canceled" or "fully refunded")
-                    {
-                        continue;
-                    }
-                    receipts.Add(MapReceipt(receipt));
+                    onItem(item);
                 }
                 if (results.GetArrayLength() < PageSize)
                 {
                     break;
                 }
             }
-
-            return receipts;
         }
 
-        private EtsyException ReceiptsError(HttpStatusCode status, string body, string shopId)
+        private EtsyException ApiError(HttpStatusCode status, string body, string shopId, string what)
         {
             if (status == HttpStatusCode.Unauthorized)
             {
@@ -170,11 +211,61 @@ namespace Fin.Infrastructure.Finance.External
             }
             if (status == HttpStatusCode.Forbidden)
             {
-                return new EtsyException($"Etsy không cho đọc đơn của shop {shopId}: {EtsyError(body)}. "
-                    + $"Kiểm tra đã đăng nhập đúng tài khoản chủ shop, và ShopId trong {SettingsFile} (nếu có điền) là đúng.");
+                // A token issued before listings_r was added lacks that scope: connecting again grants it.
+                return new EtsyException($"Etsy không cho đọc {what} của shop {shopId}: {EtsyError(body)}. "
+                    + "Nếu đã kết nối Etsy từ trước, hãy bấm \"Kết nối Etsy\" lại một lần để cấp thêm quyền. "
+                    + $"Kiểm tra cả việc đăng nhập đúng tài khoản chủ shop, và ShopId trong {SettingsFile} (nếu có điền) là đúng.");
             }
             return new EtsyException($"Etsy API lỗi ({(int)status}): {EtsyError(body)}");
         }
+
+        private static EtsyListing MapListing(JsonElement listing)
+        {
+            string? image = null;
+            if (listing.TryGetProperty("images", out var images) && images.ValueKind == JsonValueKind.Array && images.GetArrayLength() > 0
+                && images[0].TryGetProperty("url_170x135", out var thumb))
+            {
+                image = thumb.GetString();
+            }
+            var currency = listing.TryGetProperty("price", out var price) && price.ValueKind == JsonValueKind.Object
+                && price.TryGetProperty("currency_code", out var code)
+                ? code.GetString() ?? "USD"
+                : "USD";
+
+            return new EtsyListing(
+                listing.GetProperty("listing_id").GetInt64(),
+                Text(listing, "title"),
+                Text(listing, "state"),
+                Text(listing, "url"),
+                image,
+                Int(listing, "views"),
+                Int(listing, "num_favorers"),
+                Int(listing, "quantity"),
+                Money(listing, "price"),
+                currency.ToUpperInvariant());
+        }
+
+        private static EtsyLedgerEntry MapLedgerEntry(JsonElement entry)
+        {
+            var created = entry.TryGetProperty("created_timestamp", out var ts) && ts.ValueKind == JsonValueKind.Number
+                ? ts.GetInt64()
+                : entry.GetProperty("create_date").GetInt64();
+            var amount = entry.TryGetProperty("amount", out var a) && a.ValueKind == JsonValueKind.Number ? a.GetDecimal() / LedgerDivisor : 0;
+            var currency = Text(entry, "currency");
+            return new EtsyLedgerEntry(
+                entry.GetProperty("entry_id").GetInt64(),
+                DateOnly.FromDateTime(DateTimeOffset.FromUnixTimeSeconds(created).LocalDateTime),
+                Text(entry, "ledger_type"),
+                Text(entry, "description"),
+                amount,
+                string.IsNullOrEmpty(currency) ? "USD" : currency.ToUpperInvariant());
+        }
+
+        private static string Text(JsonElement parent, string name) =>
+            parent.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString()! : string.Empty;
+
+        private static int Int(JsonElement parent, string name) =>
+            parent.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number ? value.GetInt32() : 0;
 
         private static EtsyReceipt MapReceipt(JsonElement receipt)
         {
@@ -183,7 +274,10 @@ namespace Fin.Infrastructure.Finance.External
                 : "USD";
             var items = receipt.TryGetProperty("transactions", out var transactions)
                 ? transactions.EnumerateArray()
-                    .Select(t => new EtsyReceiptItem(t.GetProperty("title").GetString() ?? string.Empty, t.TryGetProperty("quantity", out var q) ? q.GetInt32() : 1))
+                    .Select(t => new EtsyReceiptItem(
+                        t.GetProperty("title").GetString() ?? string.Empty,
+                        t.TryGetProperty("quantity", out var q) ? q.GetInt32() : 1,
+                        t.TryGetProperty("listing_id", out var l) && l.ValueKind == JsonValueKind.Number ? l.GetInt64() : 0))
                     .ToList()
                 : [];
             var created = DateOnly.FromDateTime(DateTimeOffset.FromUnixTimeSeconds(receipt.GetProperty("created_timestamp").GetInt64()).LocalDateTime);

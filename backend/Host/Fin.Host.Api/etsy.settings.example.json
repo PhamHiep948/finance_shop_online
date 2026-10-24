@@ -12,12 +12,13 @@
     "ShopId": "",
     // Phải khai báo y hệt ở mục "Callback URLs" của app Etsy
     "RedirectUri": "http://localhost:5000/api/v1/etsy/callback",
-    // Loại thu gán cho đơn nhập từ Etsy (1 = Bán hàng)
-    "DefaultCategoryId": 1,
     // Đơn bằng EUR quy đổi theo tỷ giá tự nhập của tháng (trang "Tỷ giá"); tháng chưa nhập tạm tính 1 EUR = 1 USD.
     // Số dưới đây chỉ là tỷ giá tham khảo dự phòng khi không lấy được tỷ giá ECB (mất mạng...).
     "EurToUsd": 1.087,
     // % VAT Etsy đã thu hộ cho đơn trong EU: tiền nhận về được ghi luôn vào "Sau thuế"
-    "EuVatPercent": 19
+    "EuVatPercent": 19,
+    // Loại phí (ledger_type trong sổ Etsy Payments) tính thêm vào tiền quảng cáo, ngoài Etsy Ads / Offsite Ads
+    // mà app đã tự nhận ra. Thường để trống; chỉ điền khi Etsy đổi tên loại phí, ví dụ [ "marketing_fee" ].
+    "AdLedgerTypes": []
   }
 }

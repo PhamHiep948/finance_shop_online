@@ -15,5 +15,11 @@ namespace Fin.Infrastructure.Finance.Interfaces
         void Disconnect();
 
         Task<IReadOnlyList<EtsyReceipt>> GetPaidReceiptsAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken);
+
+        // Active and sold-out listings of the shop.
+        Task<IReadOnlyList<EtsyListing>> GetListingsAsync(CancellationToken cancellationToken);
+
+        // Lines of the Etsy Payments account (sales, fees, ads, payouts) created in the range.
+        Task<IReadOnlyList<EtsyLedgerEntry>> GetLedgerEntriesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken);
     }
 }
