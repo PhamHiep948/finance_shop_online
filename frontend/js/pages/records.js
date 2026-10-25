@@ -81,6 +81,9 @@ function refreshCostSplit(form) {
   form.elements.costTaxAmount.value = split.tax;
 }
 
+/** Các ô người dùng gõ được trong form tiền xưởng / tiền ship (các ô còn lại tự tính). */
+const COST_DRAFT_FIELDS = ["costAmount", "costTax", "costPayee", "costScope", "costInvoiceId", "costDate"];
+
 /** Đọc các ô tiền xưởng / tiền ship từ form; null nếu form không có các ô này. */
 function costInputOf(form, ccy) {
   if (!form.elements.costAmount) return null;
@@ -1202,6 +1205,7 @@ function createRecordsPage(kind) {
     s.formAnim = false;
 
     if (form) refreshPending();
+    applyCostDraft();
     bindRoot(root, {
       click: onClick, dblclick: onDblClick, change: onChange, input: onInput, submit: onSubmit,
       dragover: onDragOver, dragleave: onDragLeave, drop: onDrop,
@@ -1223,7 +1227,28 @@ function createRecordsPage(kind) {
     if (!slot || !s.viewId) return;
     const scroll = detailScroll();
     slot.innerHTML = recordDetailHtml(kind, list().find((x) => x.id === s.viewId), s.att, viewNav(), false);
+    applyCostDraft();
     restoreDetailScroll(scroll);
+  }
+
+  // Tiền xưởng / ship đang gõ dở (chưa bấm Lưu) được giữ lại khi panel chi tiết vẽ lại: tải chứng từ lên,
+  // dữ liệu tải lại, sửa nhanh ô khác… Chỉ áp dụng cho đúng khoản đang xem và đúng loại tiền lúc gõ.
+  function rememberCostDraft(form) {
+    s.costDraft = {
+      id: s.viewId,
+      ccy: store.ccy,
+      values: Object.fromEntries(COST_DRAFT_FIELDS.map((name) => [name, form.elements[name]?.value ?? ""])),
+    };
+  }
+  function applyCostDraft() {
+    const d = s.costDraft;
+    if (!d || d.id !== s.viewId || d.ccy !== store.ccy) return;
+    const form = root.querySelector('form[data-form="cost"]');
+    if (!form) return;
+    for (const [name, value] of Object.entries(d.values)) {
+      if (form.elements[name]) form.elements[name].value = value;
+    }
+    refreshCostSplit(form);
   }
 
   // Vẽ lại panel chi tiết (sau khi sửa nhanh, lưu, tải chứng từ…) vẫn giữ nguyên chỗ đang cuộn tới.
@@ -1245,6 +1270,7 @@ function createRecordsPage(kind) {
 
   /** Mở panel chi tiết và tải danh sách chứng từ của bản ghi. */
   async function openView(id, animate = true) {
+    if (s.costDraft?.id !== id) s.costDraft = null;
     s.viewId = id;
     s.viewAnim = animate;
     s.att = { id, loading: true, items: [] };
@@ -1448,6 +1474,8 @@ function createRecordsPage(kind) {
 
   function onChange(e) {
     const t = e.target;
+    const draftForm = t.closest?.('form[data-form="cost"]');
+    if (draftForm) rememberCostDraft(draftForm);
     if (t.classList.contains("date-text")) return; // ô gõ ngày: chỉ áp dụng khi gõ xong (xem app.js)
     if (t.dataset.action === "ccy") { setCcy(t.value); return; }
     if (t.dataset.col) { s.draftCols = { ...s.draftCols, [t.dataset.col]: t.checked }; return; }
@@ -1486,6 +1514,8 @@ function createRecordsPage(kind) {
 
   function onInput(e) {
     const t = e.target;
+    const draftForm = t.closest?.('form[data-form="cost"]');
+    if (draftForm) rememberCostDraft(draftForm);
     if (t.dataset.filter === "q") {
       s.q = t.value;
       s.page = 1;
@@ -1533,8 +1563,10 @@ function createRecordsPage(kind) {
       e.preventDefault();
       const btn = form.querySelector('button[type="submit"]');
       btn.disabled = true;
-      if (await saveCost(s.viewId, costInputOf(form, store.ccy))) await reload();
-      else btn.disabled = false;
+      if (await saveCost(s.viewId, costInputOf(form, store.ccy))) {
+        s.costDraft = null;
+        await reload();
+      } else btn.disabled = false;
       return;
     }
     if (!form.matches("form.record-form")) return;
@@ -1695,7 +1727,7 @@ function createRecordsPage(kind) {
       s = {
         q: "", cat: "", src: "", region: "", origin: "", from: "", to: "", page: 1,
         showFilters: false, cols: loadCols(kind), colOrder: loadColOrder(kind),
-        colsOpen: false, draftCols: {}, draftOrder: [], viewId: null,
+        colsOpen: false, draftCols: {}, draftOrder: [], viewId: null, costDraft: null,
         att: null, pendingFiles: [], formKey: "", catsOpen: false, catsMode: "category", catEditId: null, viewAnim: false, formAnim: false,
         etsy: { open: false, from: "", to: "", orders: null, selected: new Set(), rates: {} },
       };
