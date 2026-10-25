@@ -24,6 +24,9 @@ namespace Fin.Infrastructure.Finance.External
         private const string Scopes = "transactions_r shops_r listings_r";
         // Etsy Payments ledger amounts are integers in the smallest currency unit (cents).
         private const decimal LedgerDivisor = 100m;
+        // The ledger endpoint accepts a min_created..max_created window of at most 31 days (2 678 400 seconds);
+        // 30 days keeps a window that spans a daylight-saving change (one extra hour) under that limit.
+        private const int LedgerWindowDays = 30;
         private static readonly string[] ListingStates = ["active", "sold_out"];
 
         private readonly IHttpClientFactory _httpClientFactory;
@@ -159,13 +162,18 @@ namespace Fin.Infrastructure.Finance.External
 
         public async Task<IReadOnlyList<EtsyLedgerEntry>> GetLedgerEntriesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
         {
-            var (min, max) = UnixRange(from, to);
             var entries = new List<EtsyLedgerEntry>();
-            await ReadPagesAsync("sổ thu chi Etsy Payments",
-                (shopId, offset) => $"{ApiBase}/shops/{shopId}/payment-account/ledger-entries?min_created={min}&max_created={max}&limit={PageSize}&offset={offset}",
-                entry => entries.Add(MapLedgerEntry(entry)),
-                cancellationToken);
-            return entries;
+            // Etsy refuses a ledger window longer than 31 days, so a longer range is read window by window.
+            for (var start = from; start <= to; start = start.AddDays(LedgerWindowDays))
+            {
+                var end = start.AddDays(LedgerWindowDays - 1) < to ? start.AddDays(LedgerWindowDays - 1) : to;
+                var (min, max) = UnixRange(start, end);
+                await ReadPagesAsync("sổ thu chi Etsy Payments",
+                    (shopId, offset) => $"{ApiBase}/shops/{shopId}/payment-account/ledger-entries?min_created={min}&max_created={max}&limit={PageSize}&offset={offset}",
+                    entry => entries.Add(MapLedgerEntry(entry)),
+                    cancellationToken);
+            }
+            return entries.DistinctBy(e => e.EntryId).ToList();
         }
 
         private static (long Min, long Max) UnixRange(DateOnly from, DateOnly to) =>
@@ -212,7 +220,7 @@ namespace Fin.Infrastructure.Finance.External
             if (status == HttpStatusCode.Forbidden)
             {
                 // A token issued before listings_r was added lacks that scope: connecting again grants it.
-                return new EtsyException($"Etsy không cho đọc {what} của shop {shopId}: {EtsyError(body)}. "
+                return new EtsyException($"Etsy không cho đọc {what} của shop {shopId}: {EtsyError(body).TrimEnd('.')}. "
                     + "Nếu đã kết nối Etsy từ trước, hãy bấm \"Kết nối Etsy\" lại một lần để cấp thêm quyền. "
                     + $"Kiểm tra cả việc đăng nhập đúng tài khoản chủ shop, và ShopId trong {SettingsFile} (nếu có điền) là đúng.");
             }

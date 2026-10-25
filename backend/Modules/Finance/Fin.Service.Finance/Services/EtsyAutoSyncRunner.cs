@@ -22,6 +22,8 @@ namespace Fin.Service.Finance.Services
         private readonly ILogger<EtsyAutoSyncRunner> _logger;
         private readonly SemaphoreSlim _runLock = new(1, 1);
         private EtsyAutoSyncState? _state;
+        // A failed month-end attempt waits an hour, except that a restart (e.g. after fixing the cause) tries again at once.
+        private bool _adsTriedSinceStart;
 
         public EtsyAutoSyncRunner(
             IServiceScopeFactory scopeFactory,
@@ -97,13 +99,13 @@ namespace Fin.Service.Finance.Services
         private string LastMonth => MonthKey.Of(new DateOnly(LocalNow.Year, LocalNow.Month, 1).AddMonths(-1));
 
         // The ad spend of a month is written as an expense as soon as the month is over, whether or not the order sync
-        // is switched on; a failed attempt is retried every hour.
+        // is switched on; a failed attempt is retried every hour, and right away after a restart.
         public bool IsAdsDue()
         {
             var state = State;
             return _etsyClient.IsReady
                 && state.AdsMonthDone != LastMonth
-                && (state.AdsError is null || state.AdsLastRunAt is null || LocalNow - state.AdsLastRunAt >= AdsRetryAfter);
+                && (!_adsTriedSinceStart || state.AdsError is null || state.AdsLastRunAt is null || LocalNow - state.AdsLastRunAt >= AdsRetryAfter);
         }
 
         // Only the month that just ended is written: an older month may already have been entered by hand, or deleted
@@ -116,6 +118,7 @@ namespace Fin.Service.Finance.Services
             }
 
             var month = LastMonth;
+            _adsTriedSinceStart = true;
             try
             {
                 using var scope = _scopeFactory.CreateScope();

@@ -5227,3 +5227,6 @@ a.badge:hover { filter: brightness(.96); }
 .es-sort-th { display: inline-flex; align-items: center; gap: 3px; padding: 0; border: 0; background: none; font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; cursor: pointer; }
 .es-sort-th:hover, .es-sort-th.on { color: var(--primary); }
 th.amount .es-sort-th { justify-content: flex-end; }
+/* Thông báo lỗi / trống trong bảng Sản phẩm & Quảng cáo: xuống dòng, không kéo bảng tràn ngang. */
+.es-table .empty-state { white-space: normal; }
+.es-table .empty-state p { max-width: 720px; margin-left: auto; margin-right: auto; overflow-wrap: anywhere; }

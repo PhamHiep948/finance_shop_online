@@ -126,7 +126,7 @@ namespace Fin.Tests.Unit.Services
             public void Save(EtsyAutoSyncState state) { }
         }
 
-        private (EtsyAutoSyncRunner Runner, MemoryStateStore Store) Runner()
+        private (EtsyAutoSyncRunner Runner, MemoryStateStore Store) Runner(MemoryStateStore? savedState = null)
         {
             var services = new ServiceCollection()
                 .AddSingleton<IFinanceUnitOfWork>(_unitOfWork)
@@ -137,7 +137,7 @@ namespace Fin.Tests.Unit.Services
                 .AddScoped<EtsyOrderImporter>()
                 .AddScoped<EtsyAdsImporter>()
                 .BuildServiceProvider();
-            var store = new MemoryStateStore();
+            var store = savedState ?? new MemoryStateStore();
             var runner = new EtsyAutoSyncRunner(services.GetRequiredService<IServiceScopeFactory>(), _etsy, store,
                 EtsyOptionsFor.Shop(), Today, NullLogger<EtsyAutoSyncRunner>.Instance);
             return (runner, store);
@@ -208,6 +208,23 @@ namespace Fin.Tests.Unit.Services
             Assert.False(runner.IsAdsDue());
             store.State.AdsLastRunAt = store.State.AdsLastRunAt!.Value.AddHours(-1);
             Assert.True(runner.IsAdsDue());
+        }
+
+        [Fact]
+        public async Task After_a_restart_a_failed_month_is_tried_again_at_once()
+        {
+            SeedEtsy();
+            // Saved by the previous run, five minutes ago, before the migration had created the table.
+            var saved = new MemoryStateStore();
+            saved.State.AdsError = "Table 'finance.fx_daily' doesn't exist";
+            saved.State.AdsLastRunAt = new DateTime(2026, 10, 24, 9, 55, 0);
+
+            // The app restarted: a fresh runner reads that saved state.
+            var (runner, store) = Runner(saved);
+
+            Assert.True(runner.IsAdsDue());
+            await runner.RunAdsAsync(CancellationToken.None);
+            Assert.Equal(("2026-09", (string?)null), (store.State.AdsMonthDone, store.State.AdsError));
         }
 
         [Fact]

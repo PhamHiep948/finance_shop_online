@@ -161,6 +161,38 @@ namespace Fin.Tests.Unit.Services
             Assert.Contains($"max_created={new DateTimeOffset(new DateTime(2026, 9, 30).AddDays(1).AddTicks(-1)).ToUnixTimeSeconds()}", query);
         }
 
+        [Fact]
+        public async Task A_long_range_is_read_in_windows_etsy_accepts()
+        {
+            const long MaxWindowSeconds = 2678400; // 31 days, Etsy's limit
+            var windows = new List<(long Min, long Max)>();
+            _http.On(url => url.Contains("/payment-account/ledger-entries?", StringComparison.Ordinal), request =>
+            {
+                var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query);
+                var (min, max) = (long.Parse(query["min_created"]!), long.Parse(query["max_created"]!));
+                if (max - min > MaxWindowSeconds)
+                {
+                    return (HttpStatusCode.BadRequest, "{\"error\":\"Time window between min_created and max_created must be no more than 2678400 seconds (31 days).\"}");
+                }
+                windows.Add((min, max));
+                // The same entry in every window: the client must not count it twice.
+                return (HttpStatusCode.OK, Page([new { entry_id = 7L, ledger_type = "PROLIST", amount = -100, currency = "EUR", created_timestamp = Noon(2026, 9, 15) }]));
+            });
+
+            // Includes the end of daylight saving time (25/10/2026 in Europe).
+            var entries = await _client.GetLedgerEntriesAsync(new DateOnly(2026, 8, 1), new DateOnly(2026, 10, 31), CancellationToken.None);
+
+            Assert.Single(entries);
+            Assert.Equal(4, windows.Count);
+            Assert.Equal(new DateTimeOffset(new DateTime(2026, 8, 1)).ToUnixTimeSeconds(), windows[0].Min);
+            Assert.Equal(new DateTimeOffset(new DateTime(2026, 10, 31).AddDays(1).AddTicks(-1)).ToUnixTimeSeconds(), windows[^1].Max);
+            // Windows follow each other without a gap or an overlap.
+            for (var i = 1; i < windows.Count; i++)
+            {
+                Assert.Equal(windows[i - 1].Max + 1, windows[i].Min);
+            }
+        }
+
         // ---- Đơn hàng
 
         [Fact]
