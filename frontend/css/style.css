@@ -5230,3 +5230,6 @@ th.amount .es-sort-th { justify-content: flex-end; }
 /* Thông báo lỗi / trống trong bảng Sản phẩm & Quảng cáo: xuống dòng, không kéo bảng tràn ngang. */
 .es-table .empty-state { white-space: normal; }
 .es-table .empty-state p { max-width: 720px; margin-left: auto; margin-right: auto; overflow-wrap: anywhere; }
+/* Tên sản phẩm dài: xuống dòng, tối đa 2 dòng rồi "…", không tràn sang cột bên cạnh (ô bảng mặc định không xuống dòng). */
+.es-product-text { flex: 1; overflow: hidden; }
+.es-table td .es-title { white-space: normal; overflow-wrap: anywhere; }
