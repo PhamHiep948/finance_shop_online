@@ -1,5 +1,7 @@
 using Fin.Infrastructure.Finance.Models;
-using Fin.Infrastructure.Shared.Exceptions;
+using Fin.Model.Dto.Finance.Responses;
+using Fin.Service.Finance.UseCases.Etsy.Commands;
+using Fin.Service.Finance.UseCases.Etsy.Commands.Handlers;
 using Fin.Service.Finance.UseCases.Etsy.Queries;
 using Fin.Service.Finance.UseCases.Etsy.Queries.Handlers;
 using Fin.Service.Finance.UseCases.Etsy.Validators;
@@ -10,20 +12,32 @@ namespace Fin.Tests.Unit.Services
     public sealed class EtsyListingsAndOrdersTests
     {
         private readonly FakeEtsyClient _etsy = new();
+        private readonly InMemoryFinanceUnitOfWork _unitOfWork = new();
 
         private static EtsyListing Listing(long id, int views, int favorites = 0, string state = "active") =>
             new(id, $"Sản phẩm {id}", state, $"https://etsy.com/listing/{id}", null, views, favorites, 3, 12.5m, "EUR");
 
-        private static EtsyReceipt Receipt(string id, DateOnly date, params (long ListingId, int Quantity)[] items) =>
-            new(id, date, "EUR", items.Select(i => new EtsyReceiptItem($"Sản phẩm {i.ListingId}", i.Quantity, i.ListingId)).ToList(),
-                10m, 0, 10m, 0, 0, "US", 0);
+        // Each line: (listing, quantity, unit price in EUR). Subtotal = sum of the lines; shipping 0; buyer in the US.
+        private static EtsyReceipt Receipt(string id, DateOnly date, params (long ListingId, int Quantity, decimal Price)[] items) =>
+            new(id, date, "EUR", items.Select(i => new EtsyReceiptItem($"Sản phẩm {i.ListingId}", i.Quantity, i.ListingId, i.Price)).ToList(),
+                items.Sum(i => i.Price * i.Quantity), 0, items.Sum(i => i.Price * i.Quantity), 0, 0, "US", 0);
 
-        private async Task<List<Fin.Model.Dto.Finance.Responses.EtsyListingDto>> ListingsAsync(string from = "2026-08-01", string to = "2026-10-24")
+        private async Task<List<EtsyListingDto>> ListingsAsync()
         {
-            var result = await new GetEtsyListingsHandler(_etsy).Handle(new GetEtsyListingsQuery { From = from, To = to }, CancellationToken.None);
+            var result = await new GetEtsyListingsHandler(_etsy).Handle(new GetEtsyListingsQuery(), CancellationToken.None);
             Assert.True(result.Succeeded);
             return result.Data!;
         }
+
+        private async Task<EtsySalesResponse> SalesAsync(string from = "2026-08-01", string to = "2026-10-24")
+        {
+            var result = await new GetEtsySalesHandler(_unitOfWork, _etsy, EtsyOptionsFor.Shop())
+                .Handle(new GetEtsySalesQuery { From = from, To = to }, CancellationToken.None);
+            Assert.True(result.Succeeded);
+            return result.Data!;
+        }
+
+        // ---- Danh sách sản phẩm
 
         [Fact]
         public async Task Listings_are_sorted_by_views_then_favorites()
@@ -47,28 +61,6 @@ namespace Fin.Tests.Unit.Services
         }
 
         [Fact]
-        public async Task Sold_counts_quantity_and_orders_per_listing_in_the_period()
-        {
-            _etsy.Listings.AddRange([Listing(1, 10), Listing(2, 10), Listing(3, 10)]);
-            _etsy.Receipts.AddRange([
-                Receipt("A", new DateOnly(2026, 9, 1), (1, 2), (2, 1)),
-                Receipt("B", new DateOnly(2026, 9, 5), (1, 3)),
-                // Two lines of the same listing in one order count as one order.
-                Receipt("C", new DateOnly(2026, 9, 9), (2, 1), (2, 4)),
-                // A deleted listing (id 0) is ignored.
-                Receipt("D", new DateOnly(2026, 9, 9), (0, 5)),
-                // Outside the period.
-                Receipt("E", new DateOnly(2026, 7, 1), (3, 9)),
-            ]);
-
-            var list = (await ListingsAsync()).ToDictionary(l => l.ListingId);
-
-            Assert.Equal((5, 2), (list[1].Sold, list[1].Orders));
-            Assert.Equal((6, 2), (list[2].Sold, list[2].Orders));
-            Assert.Equal((0, 0), (list[3].Sold, list[3].Orders));
-        }
-
-        [Fact]
         public async Task A_listing_returned_twice_is_shown_once()
         {
             _etsy.Listings.AddRange([Listing(1, 10), Listing(1, 10, state: "sold_out")]);
@@ -77,41 +69,96 @@ namespace Fin.Tests.Unit.Services
         }
 
         [Fact]
-        public async Task Dates_given_the_wrong_way_round_are_swapped()
+        public async Task Listings_do_not_read_any_orders()
         {
-            await ListingsAsync(from: "2026-10-24", to: "2026-08-01");
+            await ListingsAsync();
 
-            Assert.Equal((new DateOnly(2026, 8, 1), new DateOnly(2026, 10, 24)), Assert.Single(_etsy.ReceiptRanges));
+            Assert.Empty(_etsy.ReceiptRanges);
+        }
+
+        // ---- Số bán / doanh thu theo khoảng ngày
+
+        [Fact]
+        public async Task Sales_count_quantity_orders_and_line_revenue_per_listing_in_the_period()
+        {
+            _unitOfWork.WithMonthlyRate("2026-09", 1.2m);
+            _etsy.Receipts.AddRange([
+                Receipt("A", new DateOnly(2026, 9, 1), (1, 2, 10m), (2, 1, 5m)),
+                Receipt("B", new DateOnly(2026, 9, 5), (1, 3, 10m)),
+                // Two lines of the same listing in one order count as one order.
+                Receipt("C", new DateOnly(2026, 9, 9), (2, 1, 5m), (2, 4, 5m)),
+                // A deleted listing (id 0) is not given to any product.
+                Receipt("D", new DateOnly(2026, 9, 9), (0, 5, 1m)),
+                // Outside the period.
+                Receipt("E", new DateOnly(2026, 7, 1), (3, 9, 1m)),
+            ]);
+
+            var sales = await SalesAsync();
+
+            var byId = sales.Listings.ToDictionary(l => l.ListingId);
+            Assert.Equal((5, 2, 60m), (byId[1].Sold, byId[1].Orders, byId[1].Revenue)); // 5 × 10 € × 1.2
+            Assert.Equal((6, 2, 36m), (byId[2].Sold, byId[2].Orders, byId[2].Revenue)); // 6 × 5 € × 1.2
+            Assert.False(byId.ContainsKey(3));
+            Assert.Equal((4, 16), (sales.Orders, sales.Items));
         }
 
         [Fact]
-        public async Task More_than_one_year_is_refused()
+        public async Task Total_revenue_matches_the_imported_orders()
         {
-            await Assert.ThrowsAsync<ApiException>(() => ListingsAsync(from: "2025-01-01", to: "2026-10-24"));
-            Assert.Empty(_etsy.ReceiptRanges);
+            _unitOfWork.WithMonthlyRate("2026-09", 1.2m);
+            _etsy.Receipts.AddRange([Receipt("A", new DateOnly(2026, 9, 1), (1, 2, 10m)), Receipt("B", new DateOnly(2026, 9, 2), (1, 1, 5m))]);
+
+            var sales = await SalesAsync();
+
+            // (20 € + 5 €) × 1.2, outside the EU so no VAT is taken out.
+            Assert.Equal(30m, sales.Revenue);
+        }
+
+        [Fact]
+        public async Task Changing_the_period_changes_the_totals()
+        {
+            _etsy.Receipts.AddRange([Receipt("A", new DateOnly(2026, 9, 1), (1, 2, 10m)), Receipt("B", new DateOnly(2026, 10, 2), (1, 1, 5m))]);
+
+            var september = await SalesAsync("2026-09-01", "2026-09-30");
+            var both = await SalesAsync("2026-09-01", "2026-10-31");
+
+            Assert.Equal((1, 2, 20m), (september.Orders, september.Items, september.Revenue));
+            Assert.Equal((2, 3, 25m), (both.Orders, both.Items, both.Revenue));
+        }
+
+        [Fact]
+        public async Task Dates_given_the_wrong_way_round_are_swapped()
+        {
+            var sales = await SalesAsync(from: "2026-10-24", to: "2026-08-01");
+
+            Assert.Equal((new DateOnly(2026, 8, 1), new DateOnly(2026, 10, 24)), Assert.Single(_etsy.ReceiptRanges));
+            Assert.Equal(("2026-08-01", "2026-10-24"), (sales.From, sales.To));
         }
 
         [Theory]
         [InlineData("2026-08-01", "2026-10-24", true)]
+        [InlineData("2025-10-24", "2026-10-24", true)]   // 365 days
+        [InlineData("2025-01-01", "2026-10-24", false)]  // more than a year
+        [InlineData("2026-10-24", "2025-01-01", false)]  // also when reversed
         [InlineData("01/08/2026", "2026-10-24", false)]
         [InlineData(null, "2026-10-24", false)]
         [InlineData("2026-02-30", "2026-10-24", false)]
-        public void Listings_need_two_iso_dates(string? from, string to, bool valid)
+        public void Sales_and_fees_take_two_days_at_most_a_year_apart(string? from, string to, bool valid)
         {
-            Assert.Equal(valid, new GetEtsyListingsValidator().Validate(new GetEtsyListingsQuery { From = from, To = to }).IsValid);
-        }
-
-        [Theory]
-        [InlineData("2026-01", "2026-10", true)]
-        [InlineData("2024-11", "2026-10", true)]   // 24 months
-        [InlineData("2024-10", "2026-10", false)]  // 25 months
-        [InlineData("2026-10", "2024-10", false)]  // also when reversed
-        [InlineData("2026-1", "2026-10", false)]
-        [InlineData("2026-10", null, false)]
-        public void Fees_take_at_most_24_months(string from, string? to, bool valid)
-        {
+            Assert.Equal(valid, new GetEtsySalesValidator().Validate(new GetEtsySalesQuery { From = from, To = to }).IsValid);
             Assert.Equal(valid, new GetEtsyFeesValidator().Validate(new GetEtsyFeesQuery { From = from, To = to }).IsValid);
         }
+
+        [Fact]
+        public async Task Refresh_forgets_the_kept_etsy_data()
+        {
+            var result = await new RefreshEtsyDataHandler(_etsy).Handle(new RefreshEtsyDataCommand(), CancellationToken.None);
+
+            Assert.True(result.Succeeded);
+            Assert.Equal(1, _etsy.Invalidations);
+        }
+
+        // ---- Đơn nhập vào Khoản thu
 
         [Fact]
         public async Task Orders_of_a_day_with_its_own_rate_use_that_rate()
@@ -119,7 +166,7 @@ namespace Fin.Tests.Unit.Services
             var unitOfWork = new InMemoryFinanceUnitOfWork()
                 .WithMonthlyRate("2026-09", 1.1m)
                 .WithDailyRate(new DateOnly(2026, 9, 2), 1.3m);
-            _etsy.Receipts.AddRange([Receipt("1", new DateOnly(2026, 9, 1), (1, 1)), Receipt("2", new DateOnly(2026, 9, 2), (1, 1))]);
+            _etsy.Receipts.AddRange([Receipt("1", new DateOnly(2026, 9, 1), (1, 1, 10m)), Receipt("2", new DateOnly(2026, 9, 2), (1, 1, 10m))]);
 
             var result = await new GetEtsyOrdersHandler(unitOfWork, _etsy, EtsyOptionsFor.Shop())
                 .Handle(new GetEtsyOrdersQuery { From = "2026-09-01", To = "2026-09-30" }, CancellationToken.None);

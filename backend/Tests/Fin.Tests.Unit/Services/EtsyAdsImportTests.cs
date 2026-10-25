@@ -181,7 +181,7 @@ namespace Fin.Tests.Unit.Services
                 new EtsyLedgerEntry(9, new DateOnly(2026, 9, 6), "fee", "Offsite Ads fee for order #1", -2m, "USD"),
             ]);
 
-            var result = await new GetEtsyFeesHandler(Importer()).Handle(new GetEtsyFeesQuery { From = "2026-09", To = "2026-09" }, CancellationToken.None);
+            var result = await new GetEtsyFeesHandler(Importer()).Handle(new GetEtsyFeesQuery { From = "2026-09-01", To = "2026-09-30" }, CancellationToken.None);
 
             var month = Assert.Single(result.Data!.Months);
             Assert.Equal((5m, 5m, 1m, 9m), (month.EtsyAds, month.OffsiteAds, month.Refunds, month.Ads));
@@ -194,7 +194,7 @@ namespace Fin.Tests.Unit.Services
             _etsy.LedgerEntries.AddRange([Ad(8, 3, -4m), Ad(10, 1, -2m)]);
 
             // From and To given the wrong way round are swapped.
-            var result = await new GetEtsyFeesHandler(Importer()).Handle(new GetEtsyFeesQuery { From = "2026-10", To = "2026-08" }, CancellationToken.None);
+            var result = await new GetEtsyFeesHandler(Importer()).Handle(new GetEtsyFeesQuery { From = "2026-10-31", To = "2026-08-01" }, CancellationToken.None);
 
             var months = result.Data!.Months;
             Assert.Equal(["2026-10", "2026-09", "2026-08"], months.Select(m => m.Month));
@@ -203,8 +203,23 @@ namespace Fin.Tests.Unit.Services
             Assert.Equal([2m, 0m, 4m], months.Select(m => m.Ads));
             Assert.Equal([2m, 0m, 4m], months.Select(m => m.EtsyAds));
             Assert.Equal((new DateOnly(2026, 8, 1), new DateOnly(2026, 10, 31)), Assert.Single(_etsy.LedgerRanges));
-            Assert.Equal("2026-08", result.Data.From);
-            Assert.Equal("2026-10", result.Data.To);
+            Assert.Equal("2026-08-01", result.Data.From);
+            Assert.Equal("2026-10-31", result.Data.To);
+        }
+
+        [Fact]
+        public async Task The_range_total_counts_only_the_chosen_days_while_months_stay_whole()
+        {
+            _unitOfWork.WithMonthlyRate("2026-09", 1.2m);
+            _etsy.LedgerEntries.AddRange([Ad(9, 3, -5m, "EUR"), Ad(9, 20, -7m, "EUR"), Ad(10, 2, -9m, "EUR")]);
+
+            var result = await new GetEtsyFeesHandler(Importer()).Handle(new GetEtsyFeesQuery { From = "2026-09-15", To = "2026-10-10" }, CancellationToken.None);
+
+            var fees = result.Data!;
+            // 20/09 and 02/10 are inside; 03/09 is not. September at 1.2, October without a rate at 1.
+            Assert.Equal((16m, 17.4m, "EUR"), (fees.RangeAds, fees.RangeAdsUsd, fees.Currency));
+            Assert.Equal([9m, 12m], fees.Months.Select(m => m.Ads));
+            Assert.Equal((new DateOnly(2026, 9, 1), new DateOnly(2026, 10, 31)), Assert.Single(_etsy.LedgerRanges));
         }
     }
 }

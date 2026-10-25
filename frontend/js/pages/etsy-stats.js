@@ -8,7 +8,7 @@ const ES_PAGE_SIZE = 20;
 // Tiêu chí sắp xếp sản phẩm: [khóa, nhãn, chiều mặc định]. Số thì cao → thấp trước, tên thì A → Z.
 const ES_SORTS = [
   ["views", "Lượt xem", "desc"], ["favorites", "Yêu thích", "desc"], ["sold", "Đã bán", "desc"],
-  ["likeRate", "Tỷ lệ thích", "desc"], ["price", "Giá", "desc"], ["title", "Tên sản phẩm", "asc"],
+  ["revenue", "Tiền hàng", "desc"], ["likeRate", "Tỷ lệ thích", "desc"], ["price", "Giá", "desc"], ["title", "Tên sản phẩm", "asc"],
 ];
 const EtsyStatsPage = {
   s: null,
@@ -17,7 +17,7 @@ const EtsyStatsPage = {
     this.s = {
       // preset: "month" | 3 | 6 | 12 | "custom" (tự chọn từ ngày → đến ngày).
       preset: 3, from: "", to: "", sort: "views", sortDir: "desc", search: "", page: 1,
-      status: null, listings: null, fees: null, listingsError: "", feesError: "",
+      status: null, listings: null, sales: null, fees: null, listingsError: "", salesError: "", feesError: "",
       loading: false, loaded: false,
     };
   },
@@ -60,31 +60,52 @@ const EtsyStatsPage = {
       this.render(this.root);
       return;
     }
-    Object.assign(s, { preset: "custom", from, to, listings: null, fees: null, page: 1 });
-    this.load();
+    Object.assign(s, { preset: "custom", from, to, page: 1 });
+    this.load(false);
   },
 
-  async load() {
+  /**
+   * Tải dữ liệu: trạng thái kết nối, sản phẩm, số bán và tiền quảng cáo gọi cùng lúc, phần nào về trước hiện trước.
+   * `all` = tải lại cả danh sách sản phẩm (mở trang, Làm mới); đổi ngày thì chỉ số bán và quảng cáo đổi theo.
+   */
+  async load(all = true) {
     const s = this.s;
+    const r = this.range();
+    const key = `${r.from}|${r.to}`;
+    s.rangeKey = key;
     s.loading = true;
+    if (all) s.listings = null;
+    s.sales = null;
+    s.fees = null;
     this.render(this.root);
-    try {
-      s.status = await etsyStatus();
-    } catch (e) {
-      s.status = null;
+    const show = () => { if (current.page === this) this.render(this.root); };
+    // Kết quả của khoảng ngày cũ (đã đổi ngày trong lúc chờ) thì bỏ.
+    const same = () => s.rangeKey === key;
+    const jobs = [
+      etsyStatus().then((v) => { s.status = v; }, () => { s.status = null; }).finally(show),
+      etsySales(r.from, r.to).then(
+        (v) => { if (same()) { s.sales = v; s.salesError = ""; } },
+        (e) => { if (same()) s.salesError = e.message; }).finally(show),
+      etsyFees(r.from, r.to).then(
+        (v) => { if (same()) { s.fees = v; s.feesError = ""; } },
+        (e) => { if (same()) s.feesError = e.message; }).finally(show),
+    ];
+    if (all) {
+      jobs.push(etsyListings().then(
+        (v) => { s.listings = v; s.listingsError = ""; },
+        (e) => { s.listingsError = e.message; }).finally(show));
     }
-    if (s.status?.ready) {
-      const r = this.range();
-      // Hai phần lấy độc lập: thiếu quyền đọc sản phẩm vẫn xem được tiền quảng cáo và ngược lại.
-      const [listings, fees] = await Promise.allSettled([etsyListings(r.from, r.to), etsyFees(r.fromMonth, r.toMonth)]);
-      s.listings = listings.status === "fulfilled" ? listings.value : null;
-      s.listingsError = listings.status === "rejected" ? listings.reason.message : "";
-      s.fees = fees.status === "fulfilled" ? fees.value : null;
-      s.feesError = fees.status === "rejected" ? fees.reason.message : "";
-    }
+    await Promise.all(jobs);
+    if (!same()) return;
     s.loading = false;
     s.loaded = true;
-    if (current.page === this) this.render(this.root);
+    show();
+  },
+
+  /** "Làm mới": bỏ dữ liệu Etsy backend đang nhớ rồi tải lại tất cả. */
+  async refresh() {
+    try { await etsyRefresh(); } catch { /* vẫn tải lại; lỗi kết nối sẽ hiện ở từng phần */ }
+    this.load(true);
   },
 
   /** Giá của sản phẩm theo đúng loại tiền Etsy trả về (không quy đổi). */
@@ -131,7 +152,7 @@ const EtsyStatsPage = {
   kpisHtml() {
     const s = this.s;
     const list = s.listings || [];
-    const adsUsd = (s.fees?.months || []).reduce((t, m) => t + Number(m.adsUsd || 0), 0);
+    const wait = '<span class="muted">…</span>';
     const card = (label, value, ico, tone, hint) => `
       <article class="card kpi">
         <div class="label">${label}</div>
@@ -139,12 +160,17 @@ const EtsyStatsPage = {
         <div class="kpi-ico ${tone}">${icon(ico, 18)}</div>
         ${hint ? `<div class="delta muted">${hint}</div>` : ""}
       </article>`;
+    const sales = s.sales;
+    const ads = s.fees ? Number(s.fees.rangeAdsUsd) || 0 : null;
+    const share = sales && ads != null && sales.revenue > 0 ? ` · bằng ${(ads / sales.revenue * 100).toFixed(1)}% doanh thu` : "";
+    const range = esc(this.rangeLabel());
     return `
       <div class="kpis">
-        ${card("Tổng lượt xem", s.listings ? this.num(list.reduce((t, l) => t + l.views, 0)) : "—", "eye", "blue", "từ lúc đăng sản phẩm")}
-        ${card("Lượt yêu thích", s.listings ? this.num(list.reduce((t, l) => t + l.favorites, 0)) : "—", "circle-check", "purple", "từ lúc đăng sản phẩm")}
-        ${card("Đã bán", s.listings ? this.num(list.reduce((t, l) => t + l.sold, 0)) : "—", "package", "green", esc(this.rangeLabel()))}
-        ${card("Tiền quảng cáo", s.fees ? money(adsUsd, store.ccy) : "—", "trending-down", "red", "các tháng trong khoảng đã chọn")}
+        ${card("Đơn hàng", sales ? this.num(sales.orders) : s.salesError ? "—" : wait, "package", "green", sales ? `${this.num(sales.items)} sản phẩm · ${range}` : range)}
+        ${card("Doanh thu", sales ? money(sales.revenue, store.ccy) : s.salesError ? "—" : wait, "trending-up", "blue", `trước thuế, như Khoản thu · ${range}`)}
+        ${card("Tiền quảng cáo", ads != null ? money(ads, store.ccy) : s.feesError ? "—" : wait, "trending-down", "red", `${range}${share}`)}
+        ${card("Lượt xem · Yêu thích", s.listings ? `${this.num(list.reduce((t, l) => t + l.views, 0))} · ${this.num(list.reduce((t, l) => t + l.favorites, 0))}` : s.listingsError ? "—" : wait,
+          "eye", "purple", "tổng từ lúc đăng — Etsy không cho xem theo ngày")}
       </div>`;
   },
 
@@ -155,12 +181,22 @@ const EtsyStatsPage = {
     return Number(l[key]) || 0;
   },
 
+  /** Sản phẩm kèm số bán / số đơn / tiền hàng của khoảng ngày đang chọn (chưa tải xong thì 0). */
+  rows() {
+    const s = this.s;
+    const by = new Map((s.sales?.listings || []).map((x) => [x.listingId, x]));
+    return (s.listings || []).map((l) => {
+      const x = by.get(l.listingId);
+      return { ...l, sold: x?.sold ?? l.sold ?? 0, orders: x?.orders ?? l.orders ?? 0, revenue: x?.revenue ?? l.revenue ?? 0 };
+    });
+  },
+
   /** Sản phẩm sau khi lọc theo ô tìm kiếm và sắp xếp theo tiêu chí / chiều đang chọn (bằng nhau thì theo lượt xem). */
   sortedListings() {
     const s = this.s;
     const q = s.search.trim().toLowerCase();
     const sign = s.sortDir === "asc" ? 1 : -1;
-    return (s.listings || [])
+    return this.rows()
       .filter((l) => !q || l.title.toLowerCase().includes(q))
       .sort((a, b) => {
         const va = this.sortValue(a, s.sort);
@@ -208,8 +244,8 @@ const EtsyStatsPage = {
     const s = this.s;
     let body;
     let pager = "";
-    if (s.listingsError) body = `<tr><td colspan="7">${this.errorHtml("Không lấy được danh sách sản phẩm", s.listingsError)}</td></tr>`;
-    else if (!s.listings) body = '<tr><td colspan="7"><div class="empty-state"><p>Đang tải…</p></div></td></tr>';
+    if (s.listingsError) body = `<tr><td colspan="8">${this.errorHtml("Không lấy được danh sách sản phẩm", s.listingsError)}</td></tr>`;
+    else if (!s.listings) body = '<tr><td colspan="8"><div class="empty-state"><p>Đang tải…</p></div></td></tr>';
     else {
       const all = this.sortedListings();
       const { pages, start, rows } = this.pageOf(all);
@@ -231,11 +267,12 @@ const EtsyStatsPage = {
             <div class="es-views"><span>${this.num(l.views)}</span><span class="es-bar"><span style="width:${(l.views / maxViews * 100).toFixed(1)}%"></span></span></div>
           </td>
           <td class="amount">${this.num(l.favorites)}</td>
-          <td class="amount">${l.sold ? `<b>${this.num(l.sold)}</b>` : '<span class="muted">0</span>'}</td>
+          <td class="amount">${!s.sales ? '<span class="muted">…</span>' : l.sold ? `<b>${this.num(l.sold)}</b>` : '<span class="muted">0</span>'}</td>
+          <td class="amount">${!s.sales ? '<span class="muted">…</span>' : l.revenue ? money(l.revenue, store.ccy) : '<span class="muted">—</span>'}</td>
           <td class="amount">${l.views ? `${(l.favorites / l.views * 100).toFixed(1)}%` : "—"}</td>
           <td class="amount">${this.price(l.price, l.currency)}</td>
         </tr>`).join("")
-        : '<tr><td colspan="7"><div class="empty-state"><p>Không có sản phẩm nào khớp.</p></div></td></tr>';
+        : '<tr><td colspan="8"><div class="empty-state"><p>Không có sản phẩm nào khớp.</p></div></td></tr>';
     }
 
     const isText = s.sort === "title";
@@ -270,6 +307,7 @@ const EtsyStatsPage = {
             <thead><tr>
               <th>#</th>${th("title", "Sản phẩm")}${th("views", "Lượt xem", "amount")}${th("favorites", "Yêu thích", "amount")}
               ${th("sold", "Đã bán", "amount", `Số lượng bán từ ${esc(this.rangeLabel())}`)}
+              ${th("revenue", "Tiền hàng", "amount", `Giá × số lượng bán từ ${esc(this.rangeLabel())}`)}
               ${th("likeRate", "Tỷ lệ thích", "amount", "Yêu thích ÷ lượt xem")}${th("price", "Giá", "amount")}
             </tr></thead>
             <tbody>${body}</tbody>
@@ -340,7 +378,8 @@ const EtsyStatsPage = {
     this.root = root;
     const s = this.s;
     if (!s.loaded && !s.loading) { this.load(); return; }
-    const ready = s.status?.ready;
+    // Đã biết là chưa kết nối Etsy thì chỉ hiện hướng dẫn; còn lại vẽ ngay phần nào đã có dữ liệu.
+    const ready = s.status ? s.status.ready : true;
     const r = this.range();
     const seg = ES_PRESETS.map(([v, l]) => `<button type="button" class="rpt-seg-btn${s.preset === v ? " on" : ""}" data-action="preset" data-value="${v}">${l}</button>`).join("");
 
@@ -383,11 +422,9 @@ const EtsyStatsPage = {
           const v = el.dataset.value;
           s.preset = v === "month" ? v : Number(v);
           s.page = 1;
-          s.listings = null;
-          s.fees = null;
-          this.load();
+          this.load(false);
         }
-        if (a === "refresh") this.load();
+        if (a === "refresh") this.refresh();
         if (a === "sort-col") { this.setSort(el.dataset.value, true); this.render(root); }
         if (a === "sort-dir") { s.sortDir = s.sortDir === "asc" ? "desc" : "asc"; s.page = 1; this.render(root); }
         if (a === "page") {

@@ -14,6 +14,9 @@ namespace Fin.Infrastructure.Finance.Interfaces
 
         void Disconnect();
 
+        // Forgets the listings, orders and ledger lines kept to make repeated views fast ("Làm mới").
+        void InvalidateCache();
+
         Task<IReadOnlyList<EtsyReceipt>> GetPaidReceiptsAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken);
 
         // Active and sold-out listings of the shop.

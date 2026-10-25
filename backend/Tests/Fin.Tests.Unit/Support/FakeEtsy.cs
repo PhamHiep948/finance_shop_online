@@ -42,6 +42,10 @@ namespace Fin.Tests.Unit.Support
         public Task<string> CreateAuthorizeUrlAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task CompleteAuthorizationAsync(string code, string state, CancellationToken cancellationToken) => throw new NotSupportedException();
         public void Disconnect() => throw new NotSupportedException();
+
+        public int Invalidations { get; private set; }
+
+        public void InvalidateCache() => Invalidations++;
     }
 
     // ECB rates prepared by the test.

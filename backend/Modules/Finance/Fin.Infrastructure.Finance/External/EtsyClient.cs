@@ -26,14 +26,25 @@ namespace Fin.Infrastructure.Finance.External
         private const decimal LedgerDivisor = 100m;
         // The ledger endpoint accepts a min_created..max_created window of at most 31 days (2 678 400 seconds);
         // 30 days keeps a window that spans a daylight-saving change (one extra hour) under that limit.
-        private const int LedgerWindowDays = 30;
+        // Receipts are read in the same windows so the windows can be fetched side by side and cached.
+        private const int WindowDays = 30;
+        // Etsy allows about 10 requests per second; a few at a time keeps a page fast without hitting that.
+        private const int MaxParallelRequests = 4;
         private static readonly string[] ListingStates = ["active", "sold_out"];
+        // Days that are over do not change any more (a late refund aside), so their data is kept longer;
+        // a window that includes today is only kept briefly, which keeps the order sync up to date.
+        private static readonly TimeSpan ListingsTtl = TimeSpan.FromMinutes(10);
+        private static readonly TimeSpan PastLedgerTtl = TimeSpan.FromHours(6);
+        private static readonly TimeSpan PastReceiptsTtl = TimeSpan.FromMinutes(30);
+        private static readonly TimeSpan CurrentWindowTtl = TimeSpan.FromMinutes(1);
 
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IOptionsMonitor<EtsyOptions> _options;
         private readonly FinanceStoragePaths _paths;
         private readonly TimeProvider _timeProvider;
         private readonly SemaphoreSlim _tokenLock = new(1, 1);
+        private readonly SemaphoreSlim _requestGate = new(MaxParallelRequests, MaxParallelRequests);
+        private readonly Dictionary<string, (DateTime Until, object Value)> _cache = [];
         // state -> code_verifier of PKCE flows that are waiting for the Etsy callback.
         private readonly Dictionary<string, string> _pendingAuthorizations = [];
         // A valid key is remembered; a rejected key is checked again after 30 seconds so a freshly fixed key is picked up.
@@ -114,6 +125,7 @@ namespace Fin.Infrastructure.Finance.External
                 ["code_verifier"] = verifier,
             }, null, cancellationToken);
 
+            InvalidateCache();
             if (string.IsNullOrWhiteSpace(Settings.ShopId))
             {
                 await DetectShopIdAsync(token, cancellationToken);
@@ -122,75 +134,139 @@ namespace Fin.Infrastructure.Finance.External
 
         public void Disconnect()
         {
+            InvalidateCache();
             if (File.Exists(_paths.EtsyTokenFile))
             {
                 File.Delete(_paths.EtsyTokenFile);
             }
         }
 
-        public async Task<IReadOnlyList<EtsyReceipt>> GetPaidReceiptsAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
+        public void InvalidateCache()
         {
-            var (min, max) = UnixRange(from, to);
-            var receipts = new List<EtsyReceipt>();
-            await ReadPagesAsync("đơn",
-                (shopId, offset) => $"{ApiBase}/shops/{shopId}/receipts?min_created={min}&max_created={max}&was_paid=true&was_canceled=false&limit={PageSize}&offset={offset}",
-                receipt =>
-                {
-                    // Canceled and fully refunded orders are no longer revenue.
-                    var status = receipt.TryGetProperty("status", out var st) ? st.GetString()?.ToLowerInvariant() : null;
-                    if (status is not ("canceled" or "fully refunded"))
-                    {
-                        receipts.Add(MapReceipt(receipt));
-                    }
-                },
-                cancellationToken);
-            return receipts;
+            lock (_cache)
+            {
+                _cache.Clear();
+            }
         }
 
-        public async Task<IReadOnlyList<EtsyListing>> GetListingsAsync(CancellationToken cancellationToken)
+        public async Task<IReadOnlyList<EtsyReceipt>> GetPaidReceiptsAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
         {
-            var listings = new List<EtsyListing>();
-            foreach (var state in ListingStates)
-            {
-                await ReadPagesAsync("sản phẩm",
-                    (shopId, offset) => $"{ApiBase}/shops/{shopId}/listings?state={state}&includes=Images&limit={PageSize}&offset={offset}",
-                    listing => listings.Add(MapListing(listing)),
-                    cancellationToken);
-            }
-            return listings;
+            var windows = await Task.WhenAll(Windows(from, to).Select(w => CachedAsync($"receipts:{w.Start}:{w.End}",
+                w.End < Today ? PastReceiptsTtl : CurrentWindowTtl,
+                async () =>
+                {
+                    var (min, max) = UnixRange(w.Start, w.End);
+                    var items = await ReadAllAsync("đơn",
+                        (shopId, offset) => $"{ApiBase}/shops/{shopId}/receipts?min_created={min}&max_created={max}&was_paid=true&was_canceled=false&limit={PageSize}&offset={offset}",
+                        cancellationToken);
+                    // Canceled and fully refunded orders are no longer revenue.
+                    return items
+                        .Where(r => (r.TryGetProperty("status", out var st) ? st.GetString()?.ToLowerInvariant() : null) is not ("canceled" or "fully refunded"))
+                        .Select(MapReceipt)
+                        .ToList();
+                })));
+            return windows.SelectMany(w => w).DistinctBy(r => r.ReceiptId).ToList();
         }
+
+        public Task<IReadOnlyList<EtsyListing>> GetListingsAsync(CancellationToken cancellationToken) =>
+            CachedAsync<IReadOnlyList<EtsyListing>>("listings", ListingsTtl, async () =>
+            {
+                var states = await Task.WhenAll(ListingStates.Select(state => ReadAllAsync("sản phẩm",
+                    (shopId, offset) => $"{ApiBase}/shops/{shopId}/listings?state={state}&includes=Images&limit={PageSize}&offset={offset}",
+                    cancellationToken)));
+                return states.SelectMany(items => items).Select(MapListing).ToList();
+            });
 
         public async Task<IReadOnlyList<EtsyLedgerEntry>> GetLedgerEntriesAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
         {
-            var entries = new List<EtsyLedgerEntry>();
             // Etsy refuses a ledger window longer than 31 days, so a longer range is read window by window.
-            for (var start = from; start <= to; start = start.AddDays(LedgerWindowDays))
+            var windows = await Task.WhenAll(Windows(from, to).Select(w => CachedAsync($"ledger:{w.Start}:{w.End}",
+                w.End < Today ? PastLedgerTtl : CurrentWindowTtl,
+                async () =>
+                {
+                    var (min, max) = UnixRange(w.Start, w.End);
+                    var items = await ReadAllAsync("sổ thu chi Etsy Payments",
+                        (shopId, offset) => $"{ApiBase}/shops/{shopId}/payment-account/ledger-entries?min_created={min}&max_created={max}&limit={PageSize}&offset={offset}",
+                        cancellationToken);
+                    return items.Select(MapLedgerEntry).ToList();
+                })));
+            return windows.SelectMany(w => w).DistinctBy(e => e.EntryId).ToList();
+        }
+
+        private DateOnly Today => DateOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime);
+
+        // Consecutive windows of at most WindowDays days covering from..to.
+        private static IEnumerable<(DateOnly Start, DateOnly End)> Windows(DateOnly from, DateOnly to)
+        {
+            for (var start = from; start <= to; start = start.AddDays(WindowDays))
             {
-                var end = start.AddDays(LedgerWindowDays - 1) < to ? start.AddDays(LedgerWindowDays - 1) : to;
-                var (min, max) = UnixRange(start, end);
-                await ReadPagesAsync("sổ thu chi Etsy Payments",
-                    (shopId, offset) => $"{ApiBase}/shops/{shopId}/payment-account/ledger-entries?min_created={min}&max_created={max}&limit={PageSize}&offset={offset}",
-                    entry => entries.Add(MapLedgerEntry(entry)),
-                    cancellationToken);
+                var end = start.AddDays(WindowDays - 1);
+                yield return (start, end < to ? end : to);
             }
-            return entries.DistinctBy(e => e.EntryId).ToList();
+        }
+
+        private async Task<T> CachedAsync<T>(string key, TimeSpan ttl, Func<Task<T>> load)
+        {
+            lock (_cache)
+            {
+                if (_cache.TryGetValue(key, out var hit) && hit.Until > UtcNow)
+                {
+                    return (T)hit.Value;
+                }
+            }
+            var value = await load();
+            lock (_cache)
+            {
+                _cache[key] = (UtcNow + ttl, value!);
+            }
+            return value;
         }
 
         private static (long Min, long Max) UnixRange(DateOnly from, DateOnly to) =>
             (new DateTimeOffset(from.ToDateTime(TimeOnly.MinValue)).ToUnixTimeSeconds(),
              new DateTimeOffset(to.ToDateTime(TimeOnly.MaxValue)).ToUnixTimeSeconds());
 
-        // Reads every page of a shop collection; `what` names the data in error messages.
-        private async Task ReadPagesAsync(string what, Func<string, int, string> url, Action<JsonElement> onItem, CancellationToken cancellationToken)
+        // Reads every page of a shop collection, in order; `what` names the data in error messages.
+        // Etsy tells the total on the first page, so the other pages are then read side by side.
+        private async Task<List<JsonElement>> ReadAllAsync(string what, Func<string, int, string> url, CancellationToken cancellationToken)
         {
             EnsureKeys();
             var token = await GetTokenAsync(cancellationToken);
             var shopId = !string.IsNullOrWhiteSpace(Settings.ShopId) ? Settings.ShopId : token.ShopId ?? await DetectShopIdAsync(token, cancellationToken);
             using var client = CreateApiClient(token.AccessToken);
+            var shop = Uri.EscapeDataString(shopId);
 
-            for (var offset = 0; ; offset += PageSize)
+            var (items, total) = await ReadPageAsync(client, url(shop, 0), shopId, what, cancellationToken);
+            var last = items.Count;
+            var offset = PageSize;
+            if (last == PageSize && total > PageSize)
             {
-                using var response = await client.GetAsync(url(Uri.EscapeDataString(shopId), offset), cancellationToken);
+                var offsets = Enumerable.Range(1, (total - 1) / PageSize).Select(i => i * PageSize).ToList();
+                var pages = await Task.WhenAll(offsets.Select(o => ReadPageAsync(client, url(shop, o), shopId, what, cancellationToken)));
+                foreach (var page in pages)
+                {
+                    items.AddRange(page.Items);
+                }
+                last = pages[^1].Items.Count;
+                offset = (offsets[^1]) + PageSize;
+            }
+            // No total given, or items were added meanwhile: keep reading until a page is not full.
+            while (last == PageSize)
+            {
+                var page = await ReadPageAsync(client, url(shop, offset), shopId, what, cancellationToken);
+                items.AddRange(page.Items);
+                last = page.Items.Count;
+                offset += PageSize;
+            }
+            return items;
+        }
+
+        private async Task<(List<JsonElement> Items, int Total)> ReadPageAsync(HttpClient client, string url, string shopId, string what, CancellationToken cancellationToken)
+        {
+            await _requestGate.WaitAsync(cancellationToken);
+            try
+            {
+                using var response = await client.GetAsync(url, cancellationToken);
                 var body = await response.Content.ReadAsStringAsync(cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
@@ -198,15 +274,12 @@ namespace Fin.Infrastructure.Finance.External
                 }
 
                 using var doc = JsonDocument.Parse(body);
-                var results = doc.RootElement.GetProperty("results");
-                foreach (var item in results.EnumerateArray())
-                {
-                    onItem(item);
-                }
-                if (results.GetArrayLength() < PageSize)
-                {
-                    break;
-                }
+                var total = doc.RootElement.TryGetProperty("count", out var count) && count.ValueKind == JsonValueKind.Number ? count.GetInt32() : 0;
+                return (doc.RootElement.GetProperty("results").EnumerateArray().Select(e => e.Clone()).ToList(), total);
+            }
+            finally
+            {
+                _requestGate.Release();
             }
         }
 
@@ -285,7 +358,8 @@ namespace Fin.Infrastructure.Finance.External
                     .Select(t => new EtsyReceiptItem(
                         t.GetProperty("title").GetString() ?? string.Empty,
                         t.TryGetProperty("quantity", out var q) ? q.GetInt32() : 1,
-                        t.TryGetProperty("listing_id", out var l) && l.ValueKind == JsonValueKind.Number ? l.GetInt64() : 0))
+                        t.TryGetProperty("listing_id", out var l) && l.ValueKind == JsonValueKind.Number ? l.GetInt64() : 0,
+                        Money(t, "price")))
                     .ToList()
                 : [];
             var created = DateOnly.FromDateTime(DateTimeOffset.FromUnixTimeSeconds(receipt.GetProperty("created_timestamp").GetInt64()).LocalDateTime);

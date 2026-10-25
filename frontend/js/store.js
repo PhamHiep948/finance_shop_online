@@ -263,8 +263,10 @@ function listAudit(params) {
 const etsyStatus = () => api("/etsy/status");
 const etsyOrders = (from, to) => api(`/etsy/orders?from=${from}&to=${to}`);
 const etsyImport = (orders) => api("/etsy/import", { method: "POST", body: { orders } });
-const etsyListings = (from, to) => api(`/etsy/listings?from=${from}&to=${to}`);
+const etsyListings = () => api("/etsy/listings");
+const etsySales = (from, to) => api(`/etsy/sales?from=${from}&to=${to}`);
 const etsyFees = (from, to) => api(`/etsy/fees?from=${from}&to=${to}`);
+const etsyRefresh = () => api("/etsy/refresh", { method: "POST" });
 const etsyDisconnect = () => api("/etsy/disconnect", { method: "POST" });
 // Đồng bộ tự động (backend tự lấy đơn mới theo chu kỳ).
 const etsyAutoSync = () => api("/etsy/autosync");

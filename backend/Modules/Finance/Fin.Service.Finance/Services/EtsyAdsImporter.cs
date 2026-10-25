@@ -5,6 +5,7 @@ using Fin.Infrastructure.Finance.Interfaces;
 using Fin.Infrastructure.Finance.Mappers;
 using Fin.Infrastructure.Finance.Options;
 using Fin.Model.Dto.Finance.Responses;
+using Fin.Service.Finance.Constants;
 using Microsoft.Extensions.Options;
 
 namespace Fin.Service.Finance.Services
@@ -32,20 +33,27 @@ namespace Fin.Service.Finance.Services
 
         private DateOnly Today => DateOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime);
 
+        // Months lists every month that from..to touches (whole months); the Range* totals count only the days from..to.
         public async Task<EtsyFeesResponse> GetAsync(DateOnly from, DateOnly to, CancellationToken cancellationToken)
         {
             var extraTypes = _options.CurrentValue.AdLedgerTypes;
-            var entries = await _etsyClient.GetLedgerEntriesAsync(from, to, cancellationToken);
+            var monthStart = new DateOnly(from.Year, from.Month, 1);
+            var monthEnd = new DateOnly(to.Year, to.Month, 1).AddMonths(1).AddDays(-1);
+            var entries = await _etsyClient.GetLedgerEntriesAsync(monthStart, monthEnd, cancellationToken);
             var rates = await FxRateBook.LoadAsync(_unitOfWork, cancellationToken);
-            var months = EtsyAdsCalculator.Months(entries, from, to, Today, rates, extraTypes);
+            var months = EtsyAdsCalculator.Months(entries, monthStart, monthEnd, Today, rates, extraTypes);
+            var range = EtsyAdsCalculator.Range(entries, from, to, rates, extraTypes);
             var existing = await _unitOfWork.LedgerEntryRepository.GetExistingOrderCodesAsync(
                 SalesValues.ChannelEtsy, months.Select(m => EtsyAdsCalculator.OrderCode(m.Month)).ToList(), cancellationToken, LedgerKinds.Expense);
             months.ForEach(m => m.Imported = existing.Contains(EtsyAdsCalculator.OrderCode(m.Month)));
 
             return new EtsyFeesResponse
             {
-                From = MonthKey.Of(from),
-                To = MonthKey.Of(to),
+                From = from.ToString(FinanceConstants.IsoDateFormat, CultureInfo.InvariantCulture),
+                To = to.ToString(FinanceConstants.IsoDateFormat, CultureInfo.InvariantCulture),
+                RangeAds = range.Ads,
+                RangeAdsUsd = range.AdsUsd,
+                Currency = range.Currency,
                 Months = months.OrderByDescending(m => m.Month, StringComparer.Ordinal).ToList(),
                 Types = EtsyAdsCalculator.Types(entries, extraTypes),
             };

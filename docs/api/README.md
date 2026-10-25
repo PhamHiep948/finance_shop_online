@@ -108,8 +108,10 @@ Mỗi khoản (`LedgerEntryResponse`) gồm: `id, kind, date, description, categ
 | POST | `/etsy/disconnect` | `DisconnectEtsyCommand` | |
 | GET | `/etsy/orders?from&to` | `GetEtsyOrdersQuery` | ngày `yyyy-MM-dd`, tối đa 1 năm; mỗi đơn có `imported` |
 | POST | `/etsy/import` | `ImportEtsyOrdersCommand` | body `{ orders }` → `{ imported, skipped }` |
-| GET | `/etsy/listings?from&to` | `GetEtsyListingsQuery` | sản phẩm đang bán / hết hàng, xếp theo lượt xem; `views`, `favorites` là tổng từ lúc đăng, `sold`, `orders` tính trong `from`–`to` (yyyy-MM-dd, ≤ 1 năm). Cần quyền `listings_r` |
-| GET | `/etsy/fees?from&to` | `GetEtsyFeesQuery` | tháng yyyy-MM (≤ 24 tháng) → `{ months: [{ month, etsyAds, offsiteAds, refunds, ads, currency, adsUsd, complete, imported }], types: [{ ledgerType, description, count, amount, isAds }] }` lấy từ sổ Etsy Payments |
+| GET | `/etsy/listings` | `GetEtsyListingsQuery` | sản phẩm đang bán / hết hàng, xếp theo lượt xem; `views`, `favorites` là tổng từ lúc đăng. Backend nhớ 10 phút. Cần quyền `listings_r` |
+| GET | `/etsy/sales?from&to` | `GetEtsySalesQuery` | ngày yyyy-MM-dd (≤ 1 năm) → `{ orders, items, revenue, listings: [{ listingId, sold, orders, revenue }] }`; `revenue` (USD, trước thuế) tính như Khoản thu |
+| POST | `/etsy/refresh` | `RefreshEtsyDataCommand` | bỏ dữ liệu Etsy backend đang nhớ (nút "Làm mới") |
+| GET | `/etsy/fees?from&to` | `GetEtsyFeesQuery` | ngày yyyy-MM-dd (≤ 1 năm) → `{ rangeAds, rangeAdsUsd, currency, months: [{ month, etsyAds, offsiteAds, refunds, ads, currency, adsUsd, complete, imported }], types: [{ ledgerType, description, count, amount, isAds }] }` lấy từ sổ Etsy Payments; `range*` chỉ tính đúng các ngày đã chọn, `months` là trọn các tháng có trong khoảng |
 | GET | `/etsy/autosync` | `GetEtsyAutoSyncQuery` | `{ enabled, intervalMinutes, lookbackDays, lastRunAt, lastImported, totalImported, lastError, running, ready, nextRunAt, intervals }` |
 | PUT | `/etsy/autosync` | `ConfigureEtsyAutoSyncCommand` | body `{ enabled, intervalMinutes }` (15, 30, 60, 360, 1440) |
 | POST | `/etsy/autosync/run` | `RunEtsyAutoSyncCommand` | chạy ngay; chưa kết nối → `ETS_ERR_001`. Mỗi lần chạy nhập đơn mới (`lastImported`). Riêng tiền quảng cáo: hễ Etsy đã kết nối, sang tháng mới backend tự ghi tháng vừa hết thành một khoản chi "Quảng cáo" (mã `ADS-yyyy-MM`, sửa được ở Khoản chi), lỗi thì thử lại mỗi giờ (`adsMonthDone`, `lastAdsImported`, `adsError`) |

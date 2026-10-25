@@ -48,8 +48,14 @@ namespace Fin.Presentation.Finance.Controllers.v1
             Ok(await Mediator.Send(new ImportEtsyOrdersCommand { Orders = request.Orders ?? [] }));
 
         [HttpGet("listings")]
-        public async Task<IActionResult> GetListingsAsync([FromQuery] string? from, [FromQuery] string? to) =>
-            Ok(await Mediator.Send(new GetEtsyListingsQuery { From = from, To = to }));
+        public async Task<IActionResult> GetListingsAsync() => Ok(await Mediator.Send(new GetEtsyListingsQuery()));
+
+        [HttpGet("sales")]
+        public async Task<IActionResult> GetSalesAsync([FromQuery] string? from, [FromQuery] string? to) =>
+            Ok(await Mediator.Send(new GetEtsySalesQuery { From = from, To = to }));
+
+        [HttpPost("refresh")]
+        public async Task<IActionResult> RefreshAsync() => Ok(await Mediator.Send(new RefreshEtsyDataCommand()));
 
         [HttpGet("fees")]
         public async Task<IActionResult> GetFeesAsync([FromQuery] string? from, [FromQuery] string? to) =>

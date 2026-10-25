@@ -3,11 +3,25 @@ const assert = require("node:assert/strict");
 const { loadScripts } = require("./load");
 
 const toasts = [];
+const calls = [];
+// Tháng 9 bán 2 đơn, các khoảng khác 5 đơn: đủ để thấy ô tổng đổi theo ngày.
+const salesFor = (from) => (from >= "2026-09-01"
+  ? { orders: 2, items: 3, revenue: 40, listings: [{ listingId: 1, sold: 3, orders: 2, revenue: 27 }] }
+  : { orders: 5, items: 9, revenue: 100, listings: [{ listingId: 1, sold: 9, orders: 5, revenue: 81 }] });
 function setup() {
   toasts.length = 0;
+  calls.length = 0;
   const { EtsyStatsPage, localISO } = loadScripts(["js/format.js", "js/api.js", "js/pages/etsy-stats.js"], {
     window: {}, location: { protocol: "http:", port: "5500", origin: "http://127.0.0.1:5500" },
     toast: (msg) => toasts.push(msg),
+    current: { page: null },
+    store: { ccy: "USD" },
+    // API giả: ghi lại các lần gọi; số bán / quảng cáo theo đúng khoảng ngày được hỏi.
+    etsyStatus: async () => { calls.push("status"); return { ready: true }; },
+    etsyListings: async () => { calls.push("listings"); return [{ listingId: 1, title: "Lilie", views: 100, favorites: 10, price: 9, currency: "EUR" }]; },
+    etsySales: async (from, to) => { calls.push(`sales ${from} ${to}`); return salesFor(from, to); },
+    etsyFees: async (from, to) => { calls.push(`fees ${from} ${to}`); return { rangeAdsUsd: from >= "2026-09-01" ? 5 : 12, months: [] }; },
+    etsyRefresh: async () => { calls.push("refresh"); },
   })(["EtsyStatsPage", "localISO"]);
   EtsyStatsPage.init();
   return { page: EtsyStatsPage, localISO };
@@ -161,4 +175,59 @@ test("một trang thì không có nút chuyển trang", () => {
   const html = page.pagerHtml(4, 1);
   assert.match(html, /Hiển thị 1 – 4 trên tổng số 4 sản phẩm/);
   assert.doesNotMatch(html, /pager-pages/);
+});
+
+// ---- Ô tổng theo khoảng ngày và tải dữ liệu
+
+test("đổi khoảng ngày thì ô Đơn hàng, Doanh thu, Tiền quảng cáo đổi theo", async () => {
+  const { page } = setup();
+  Object.assign(page.s, { preset: "custom", from: "2026-08-01", to: "2026-10-24" });
+  await page.load(true);
+  let html = page.kpisHtml();
+  assert.match(html, /<div class="value">5<\/div>/);
+  assert.match(html, /\$100\.00/);
+  assert.match(html, /\$12\.00/);
+  assert.match(html, /bằng 12\.0% doanh thu/);
+
+  Object.assign(page.s, { from: "2026-09-01", to: "2026-09-30" });
+  await page.load(false);
+  html = page.kpisHtml();
+  assert.match(html, /<div class="value">2<\/div>/);
+  assert.match(html, /\$40\.00/);
+  assert.match(html, /\$5\.00/);
+  assert.equal(page.rows()[0].sold, 3);
+});
+
+test("đổi khoảng ngày không tải lại danh sách sản phẩm; Làm mới thì tải lại tất cả", async () => {
+  const { page } = setup();
+  Object.assign(page.s, { preset: "custom", from: "2026-08-01", to: "2026-10-24" });
+  await page.load(true);
+  calls.length = 0;
+  await page.load(false);
+  assert.deepEqual(calls.filter((c) => c === "listings"), []);
+  assert.ok(calls.includes("sales 2026-08-01 2026-10-24") && calls.includes("fees 2026-08-01 2026-10-24"));
+  calls.length = 0;
+  await page.refresh();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(calls[0], "refresh");
+  assert.ok(calls.includes("listings"));
+});
+
+test("mọi phần được hỏi cùng lúc, không chờ nhau", async () => {
+  const { page } = setup();
+  Object.assign(page.s, { preset: "custom", from: "2026-08-01", to: "2026-10-24" });
+  const done = page.load(true);
+  // Chưa phần nào trả lời mà cả 4 đã được hỏi.
+  assert.deepEqual(calls.map((c) => c.split(" ")[0]).sort(), ["fees", "listings", "sales", "status"]);
+  await done;
+});
+
+test("kết quả của khoảng ngày cũ về muộn thì bị bỏ", async () => {
+  const { page } = setup();
+  Object.assign(page.s, { preset: "custom", from: "2026-08-01", to: "2026-10-24" });
+  const first = page.load(false);
+  Object.assign(page.s, { from: "2026-09-01", to: "2026-09-30" });
+  const second = page.load(false);
+  await Promise.all([first, second]);
+  assert.equal(page.s.sales.orders, 2);
 });

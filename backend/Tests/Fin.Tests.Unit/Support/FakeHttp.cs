@@ -24,14 +24,20 @@ namespace Fin.Tests.Unit.Support
             return this;
         }
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            Requests.Add(request);
+            lock (Requests)
+            {
+                Requests.Add(request);
+            }
             var url = request.RequestUri!.ToString();
             // The last matching rule wins, so a test can override a general rule with a specific one.
             var rule = _rules.LastOrDefault(r => r.Match(url));
-            var (status, body) = rule.Reply is null ? (HttpStatusCode.NotFound, "{\"error\":\"no fake for " + url + "\"}") : rule.Reply(request);
-            return Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") });
+            // Answered on another thread, like a real network call, so requests sent together really overlap.
+            var (status, body) = rule.Reply is null
+                ? (HttpStatusCode.NotFound, "{\"error\":\"no fake for " + url + "\"}")
+                : await Task.Run(() => rule.Reply(request), cancellationToken);
+            return new HttpResponseMessage(status) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         }
     }
 

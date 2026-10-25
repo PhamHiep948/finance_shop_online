@@ -174,7 +174,10 @@ namespace Fin.Tests.Unit.Services
                 {
                     return (HttpStatusCode.BadRequest, "{\"error\":\"Time window between min_created and max_created must be no more than 2678400 seconds (31 days).\"}");
                 }
-                windows.Add((min, max));
+                lock (windows)
+                {
+                    windows.Add((min, max));
+                }
                 // The same entry in every window: the client must not count it twice.
                 return (HttpStatusCode.OK, Page([new { entry_id = 7L, ledger_type = "PROLIST", amount = -100, currency = "EUR", created_timestamp = Noon(2026, 9, 15) }]));
             });
@@ -184,6 +187,8 @@ namespace Fin.Tests.Unit.Services
 
             Assert.Single(entries);
             Assert.Equal(4, windows.Count);
+            // The windows are read side by side, so put them back in date order before checking them.
+            windows.Sort();
             Assert.Equal(new DateTimeOffset(new DateTime(2026, 8, 1)).ToUnixTimeSeconds(), windows[0].Min);
             Assert.Equal(new DateTimeOffset(new DateTime(2026, 10, 31).AddDays(1).AddTicks(-1)).ToUnixTimeSeconds(), windows[^1].Max);
             // Windows follow each other without a gap or an overlap.
@@ -264,6 +269,82 @@ namespace Fin.Tests.Unit.Services
             var url = await _client.CreateAuthorizeUrlAsync(CancellationToken.None);
 
             Assert.Contains("scope=transactions_r%20shops_r%20listings_r", url);
+        }
+
+        // ---- Tốc độ: đọc song song và nhớ tạm
+
+        [Fact]
+        public async Task With_a_total_from_etsy_the_other_pages_are_read_side_by_side()
+        {
+            // Etsy says 250 listings: pages at offset 100 and 200 are asked without waiting for each other.
+            var inFlight = 0;
+            var maxInFlight = 0;
+            _http.On(url => url.Contains("state=active", StringComparison.Ordinal), request =>
+            {
+                var now = Interlocked.Increment(ref inFlight);
+                lock (_http) { maxInFlight = Math.Max(maxInFlight, now); }
+                Thread.Sleep(50);
+                Interlocked.Decrement(ref inFlight);
+                var offset = int.Parse(System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query)["offset"]!);
+                var size = Math.Min(100, 250 - offset);
+                return (HttpStatusCode.OK, JsonSerializer.Serialize(new { count = 250, results = Enumerable.Range(offset + 1, size).Select(i => ListingJson(i)) }));
+            });
+            _http.On("state=sold_out", Page([]));
+
+            var listings = await _client.GetListingsAsync(CancellationToken.None);
+
+            Assert.Equal(Enumerable.Range(1, 250).Select(i => (long)i), listings.Select(l => l.ListingId));
+            Assert.True(maxInFlight >= 2, $"pages were read one at a time (max {maxInFlight})");
+        }
+
+        [Fact]
+        public async Task Listings_are_kept_until_refresh()
+        {
+            _http.On("state=active", Page([ListingJson(1)]));
+            _http.On("state=sold_out", Page([]));
+
+            await _client.GetListingsAsync(CancellationToken.None);
+            await _client.GetListingsAsync(CancellationToken.None);
+            Assert.Equal(2, _http.Requests.Count);
+
+            _client.InvalidateCache();
+            await _client.GetListingsAsync(CancellationToken.None);
+            Assert.Equal(4, _http.Requests.Count);
+        }
+
+        [Fact]
+        public async Task Past_ledger_windows_are_kept_and_the_window_with_today_only_briefly()
+        {
+            _http.On("/payment-account/ledger-entries?", Page([]));
+
+            // 24/10/2026 is today: September is over, October is not.
+            await _client.GetLedgerEntriesAsync(new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 30), CancellationToken.None);
+            await _client.GetLedgerEntriesAsync(new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 30), CancellationToken.None);
+            Assert.Single(_http.Requests);
+
+            await _client.GetLedgerEntriesAsync(new DateOnly(2026, 10, 1), new DateOnly(2026, 10, 24), CancellationToken.None);
+            await _client.GetLedgerEntriesAsync(new DateOnly(2026, 10, 1), new DateOnly(2026, 10, 24), CancellationToken.None);
+            // Kept for a minute too, so a page opened twice in a row does not ask again.
+            Assert.Equal(2, _http.Requests.Count);
+        }
+
+        [Fact]
+        public async Task Receipts_of_a_long_range_are_read_in_windows()
+        {
+            var windows = new List<string>();
+            _http.On(url => url.Contains("/receipts?", StringComparison.Ordinal), request =>
+            {
+                lock (windows)
+                {
+                    windows.Add(request.RequestUri!.Query);
+                }
+                return (HttpStatusCode.OK, Page([]));
+            });
+
+            await _client.GetPaidReceiptsAsync(new DateOnly(2026, 1, 1), new DateOnly(2026, 6, 30), CancellationToken.None);
+
+            // 181 days → 7 windows of at most 30 days.
+            Assert.Equal(7, windows.Count);
         }
     }
 }

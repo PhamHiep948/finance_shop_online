@@ -2,8 +2,12 @@ namespace Fin.Model.Dto.Finance.Responses
 {
     public sealed class EtsyFeesResponse
     {
+        // The chosen days (yyyy-MM-dd); Months covers every month they touch, the Range* totals only these days.
         public string From { get; set; } = string.Empty;
         public string To { get; set; } = string.Empty;
+        public decimal RangeAds { get; set; }
+        public decimal RangeAdsUsd { get; set; }
+        public string Currency { get; set; } = "USD";
         public List<EtsyAdsMonthDto> Months { get; set; } = [];
         public List<EtsyFeeTypeDto> Types { get; set; } = [];
     }

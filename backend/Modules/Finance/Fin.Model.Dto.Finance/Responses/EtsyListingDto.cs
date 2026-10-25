@@ -13,8 +13,5 @@ namespace Fin.Model.Dto.Finance.Responses
         public int Stock { get; set; }
         public decimal Price { get; set; }
         public string Currency { get; set; } = "USD";
-        // Paid orders of the requested period only.
-        public int Sold { get; set; }
-        public int Orders { get; set; }
     }
 }

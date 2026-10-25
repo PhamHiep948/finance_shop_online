@@ -55,6 +55,18 @@ namespace Fin.Service.Finance.Services
             return months;
         }
 
+        // Ad spend of the days from..to (credits deducted), in the ledger currency and in USD (each charge at its day's rate).
+        public static (decimal Ads, decimal AdsUsd, string Currency) Range(
+            IReadOnlyCollection<EtsyLedgerEntry> entries, DateOnly from, DateOnly to, FxRateBook rates, IReadOnlyCollection<string> extraTypes)
+        {
+            var ads = entries.Where(e => e.Created >= from && e.Created <= to && IsAds(e, extraTypes)).ToList();
+            var currency = ads.FirstOrDefault()?.Currency
+                ?? entries.GroupBy(e => e.Currency).OrderByDescending(g => g.Count()).Select(g => g.Key).FirstOrDefault() ?? "USD";
+            return (-ads.Sum(e => e.Amount),
+                decimal.Round(-ads.Sum(e => e.Amount * rates.ToUsdRate(e.Currency, e.Created)), 2, MidpointRounding.AwayFromZero),
+                currency);
+        }
+
         // Offsite Ads are paid per order they bring in; everything else counted as ads is Etsy Ads (on-site).
         public static bool IsOffsite(EtsyLedgerEntry entry) =>
             entry.LedgerType.Contains("offsite", StringComparison.OrdinalIgnoreCase)
