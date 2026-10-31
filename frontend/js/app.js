@@ -316,9 +316,9 @@ async function pollEtsyAuto() {
   try { a = await etsyAutoSync(); } catch { return; }
   const changed = store.etsyAuto?.enabled !== a.enabled;
   store.etsyAuto = a;
-  // Hết tháng, backend tự ghi tiền quảng cáo Etsy của tháng đó vào Khoản chi.
+  // Mỗi giờ backend tự ghi / cập nhật tiền quảng cáo Etsy vào Khoản chi.
   if (store.etsyAdsSeen !== undefined && a.adsLastRunAt !== store.etsyAdsSeen && a.lastAdsImported > 0) {
-    toast(`Đã ghi tiền quảng cáo Etsy tháng ${String(a.adsMonthDone || "").split("-").reverse().join("/")} vào Khoản chi`);
+    toast(`Đã cập nhật tiền quảng cáo Etsy vào Khoản chi (${a.lastAdsImported} tháng)`);
     reload();
   }
   store.etsyAdsSeen = a.adsLastRunAt;

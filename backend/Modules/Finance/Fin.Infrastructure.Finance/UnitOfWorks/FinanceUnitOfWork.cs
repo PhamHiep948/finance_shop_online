@@ -15,7 +15,8 @@ namespace Fin.Infrastructure.Finance.UnitOfWorks
             IFxMonthlyRateRepository fxMonthlyRateRepository,
             IFxDailyRateRepository fxDailyRateRepository,
             ICategoryGroupRepository categoryGroupRepository,
-            ITranslationRepository translationRepository)
+            ITranslationRepository translationRepository,
+            IEtsyListingStatRepository etsyListingStatRepository)
             : base(context)
         {
             CategoryRepository = categoryRepository;
@@ -26,6 +27,7 @@ namespace Fin.Infrastructure.Finance.UnitOfWorks
             FxDailyRateRepository = fxDailyRateRepository;
             CategoryGroupRepository = categoryGroupRepository;
             TranslationRepository = translationRepository;
+            EtsyListingStatRepository = etsyListingStatRepository;
         }
 
         public ICategoryRepository CategoryRepository { get; }
@@ -43,5 +45,7 @@ namespace Fin.Infrastructure.Finance.UnitOfWorks
         public ICategoryGroupRepository CategoryGroupRepository { get; }
 
         public ITranslationRepository TranslationRepository { get; }
+
+        public IEtsyListingStatRepository EtsyListingStatRepository { get; }
     }
 }

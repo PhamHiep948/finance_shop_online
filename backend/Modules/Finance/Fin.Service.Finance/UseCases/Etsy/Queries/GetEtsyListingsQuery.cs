@@ -4,7 +4,7 @@ using MediatR;
 
 namespace Fin.Service.Finance.UseCases.Etsy.Queries
 {
-    // Active and sold-out listings; views and favorites are lifetime counts, so no period applies.
+    // Active and sold-out listings with their lifetime views and favorites (per period: GetEtsyListingViewsQuery).
     public sealed class GetEtsyListingsQuery : IRequest<Response<List<EtsyListingDto>>>
     {
     }

@@ -39,6 +39,7 @@ namespace Fin.Infrastructure.Finance
             services.AddScoped<IFxDailyRateRepository, FxDailyRateRepository>();
             services.AddScoped<ICategoryGroupRepository, CategoryGroupRepository>();
             services.AddScoped<ITranslationRepository, TranslationRepository>();
+            services.AddScoped<IEtsyListingStatRepository, EtsyListingStatRepository>();
             services.AddScoped<IFinanceUnitOfWork, FinanceUnitOfWork>();
 
             services.AddSingleton<FinanceStoragePaths>();

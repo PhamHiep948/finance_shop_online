@@ -24,7 +24,13 @@ namespace Fin.Model.Dto.Finance.Responses
         public decimal AdsUsd { get; set; }
         // A month that has not ended yet may still receive charges, so it cannot be imported.
         public bool Complete { get; set; }
+        // The expense of this month (deleted ones included), its amount, and whether the user changed it or deleted it.
         public bool Imported { get; set; }
+        public long? ExpenseId { get; set; }
+        public decimal? ExpenseAmount { get; set; }
+        public string? ExpenseCurrency { get; set; }
+        public bool Edited { get; set; }
+        public bool Deleted { get; set; }
     }
 
     public sealed class EtsyFeeTypeDto

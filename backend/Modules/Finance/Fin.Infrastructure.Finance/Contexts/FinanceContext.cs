@@ -18,6 +18,7 @@ namespace Fin.Infrastructure.Finance.Contexts
         public DbSet<FxDailyRate> FxDailyRates => Set<FxDailyRate>();
         public DbSet<CategoryGroup> CategoryGroups => Set<CategoryGroup>();
         public DbSet<Translation> Translations => Set<Translation>();
+        public DbSet<EtsyListingDailyStat> EtsyListingDailyStats => Set<EtsyListingDailyStat>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

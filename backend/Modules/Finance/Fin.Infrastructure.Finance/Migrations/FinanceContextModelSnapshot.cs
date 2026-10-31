@@ -193,6 +193,40 @@ namespace Fin.Infrastructure.Finance.Migrations
                     b.ToTable("category_groups", (string)null);
                 });
 
+            modelBuilder.Entity("Fin.Domain.Finance.Entities.EtsyListingDailyStat", b =>
+                {
+                    b.Property<long>("ListingId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("listing_id");
+
+                    b.Property<DateOnly>("Date")
+                        .HasColumnType("date")
+                        .HasColumnName("date");
+
+                    b.Property<int>("Favorites")
+                        .HasColumnType("int")
+                        .HasColumnName("favorites");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("datetime")
+                        .HasColumnName("updated_at")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    MySqlPropertyBuilderExtensions.UseMySqlComputedColumn(b.Property<DateTime>("UpdatedAt"));
+
+                    b.Property<int>("Views")
+                        .HasColumnType("int")
+                        .HasColumnName("views");
+
+                    b.HasKey("ListingId", "Date");
+
+                    b.HasIndex("Date")
+                        .HasDatabaseName("idx_etsy_listing_daily_date");
+
+                    b.ToTable("etsy_listing_daily", (string)null);
+                });
+
             modelBuilder.Entity("Fin.Domain.Finance.Entities.FxDailyRate", b =>
                 {
                     b.Property<DateOnly>("Date")

@@ -10,7 +10,9 @@ using Microsoft.Extensions.Options;
 
 namespace Fin.Service.Finance.Services
 {
-    // Turns the Etsy advertising of each finished month into one expense entry of category "Quảng cáo".
+    // Keeps one expense entry of category "Quảng cáo" per month in step with the Etsy advertising of that month:
+    // created as soon as there is a charge, then updated while Etsy adds charges (the running month) or credits.
+    // An entry the user corrected by hand, deleted, or that lies in a locked period is left as it is.
     public sealed class EtsyAdsImporter
     {
         private const string AdsCategory = "Quảng cáo";
@@ -21,14 +23,17 @@ namespace Fin.Service.Finance.Services
         private readonly AuditTrail _auditTrail;
         private readonly IOptionsMonitor<EtsyOptions> _options;
         private readonly TimeProvider _timeProvider;
+        private readonly PeriodLockPolicy _periodLock;
 
-        public EtsyAdsImporter(IFinanceUnitOfWork unitOfWork, IEtsyClient etsyClient, AuditTrail auditTrail, IOptionsMonitor<EtsyOptions> options, TimeProvider timeProvider)
+        public EtsyAdsImporter(IFinanceUnitOfWork unitOfWork, IEtsyClient etsyClient, AuditTrail auditTrail, IOptionsMonitor<EtsyOptions> options,
+            TimeProvider timeProvider, PeriodLockPolicy periodLock)
         {
             _unitOfWork = unitOfWork;
             _etsyClient = etsyClient;
             _auditTrail = auditTrail;
             _options = options;
             _timeProvider = timeProvider;
+            _periodLock = periodLock;
         }
 
         private DateOnly Today => DateOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime);
@@ -43,9 +48,19 @@ namespace Fin.Service.Finance.Services
             var rates = await FxRateBook.LoadAsync(_unitOfWork, cancellationToken);
             var months = EtsyAdsCalculator.Months(entries, monthStart, monthEnd, Today, rates, extraTypes);
             var range = EtsyAdsCalculator.Range(entries, from, to, rates, extraTypes);
-            var existing = await _unitOfWork.LedgerEntryRepository.GetExistingOrderCodesAsync(
-                SalesValues.ChannelEtsy, months.Select(m => EtsyAdsCalculator.OrderCode(m.Month)).ToList(), cancellationToken, LedgerKinds.Expense);
-            months.ForEach(m => m.Imported = existing.Contains(EtsyAdsCalculator.OrderCode(m.Month)));
+            var expenses = await ExpensesAsync(months, cancellationToken);
+            foreach (var month in months)
+            {
+                if (expenses.TryGetValue(EtsyAdsCalculator.OrderCode(month.Month), out var expense))
+                {
+                    month.Imported = true;
+                    month.ExpenseId = expense.Id;
+                    month.ExpenseAmount = expense.Amount;
+                    month.ExpenseCurrency = expense.CurrencyCode;
+                    month.Deleted = expense.IsDeleted;
+                    month.Edited = IsEditedByHand(expense, month.AdsUsd);
+                }
+            }
 
             return new EtsyFeesResponse
             {
@@ -59,16 +74,51 @@ namespace Fin.Service.Finance.Services
             };
         }
 
-        // `months` are the first days of the months to import.
-        public async Task<EtsyImportResponse> ImportAsync(IReadOnlyCollection<DateOnly> months, string auditNote, CancellationToken cancellationToken)
+        // Brings the expenses of the months from..to (first days of months) in step with Etsy.
+        public async Task<EtsyAdsSyncResponse> SyncAsync(DateOnly fromMonth, DateOnly toMonth, string auditNote, CancellationToken cancellationToken)
         {
-            var fees = await GetAsync(months.Min(), months.Max().AddMonths(1).AddDays(-1), cancellationToken);
-            var wanted = months.Select(MonthKey.Of).ToHashSet();
-            // Only finished months with a real charge become entries; one already imported (even if trashed) is skipped.
-            var fresh = fees.Months.Where(m => wanted.Contains(m.Month) && m.Complete && !m.Imported && m.AdsUsd > 0).ToList();
-            if (fresh.Count == 0)
+            var fees = await GetAsync(fromMonth, toMonth.AddMonths(1).AddDays(-1), cancellationToken);
+            var expenses = await ExpensesAsync(fees.Months, cancellationToken);
+            var fresh = new List<EtsyAdsMonthDto>();
+            // Before is null when only the remembered Etsy amount was filled in (no visible change).
+            var changed = new List<(LedgerEntry Entry, LedgerEntryResponse? Before)>();
+            foreach (var month in fees.Months)
             {
-                return new EtsyImportResponse(0, wanted.Count);
+                if (!expenses.TryGetValue(EtsyAdsCalculator.OrderCode(month.Month), out var expense))
+                {
+                    if (month.AdsUsd > 0)
+                    {
+                        fresh.Add(month);
+                    }
+                    continue;
+                }
+                // A deleted entry stays deleted, a hand-corrected one keeps its amount, a locked period does not move.
+                if (expense.IsDeleted || IsEditedByHand(expense, month.AdsUsd) || _periodLock.Check(expense.Date) is not null)
+                {
+                    continue;
+                }
+                if (expense.Details.EtsyAmount is null)
+                {
+                    // Written before the Etsy amount was remembered, and still equal to it: remember it from now on.
+                    expense.Details = Copy(expense.Details, d => d.EtsyAmount = month.AdsUsd);
+                    changed.Add((expense, null));
+                    continue;
+                }
+                if (expense.Amount != month.AdsUsd)
+                {
+                    var before = LedgerEntryMapper.ToResponse(expense, 0);
+                    expense.SetAmounts(month.AdsUsd, expense.TaxPercent);
+                    expense.Details = Copy(expense.Details, d =>
+                    {
+                        d.EtsyAmount = month.AdsUsd;
+                        d.Note = Note(month);
+                    });
+                    changed.Add((expense, before));
+                }
+            }
+            if (fresh.Count == 0 && changed.Count == 0)
+            {
+                return new EtsyAdsSyncResponse(0, 0);
             }
 
             var categoryId = await _unitOfWork.CategoryRepository.FindIdByNameAsync(CategoryKinds.Expense, AdsCategory, cancellationToken)
@@ -77,31 +127,76 @@ namespace Fin.Service.Finance.Services
             // Like Etsy orders, these are source data and may be filled into a locked period.
             await _unitOfWork.ExecuteInTransactionAsync(async () =>
             {
-                var entries = fresh.Select(m => ToEntry(m, categoryId)).ToList();
-                entries.ForEach(_unitOfWork.LedgerEntryRepository.Add);
+                var created = fresh.Select(m => ToEntry(m, categoryId)).ToList();
+                created.ForEach(_unitOfWork.LedgerEntryRepository.Add);
                 await _unitOfWork.CommitAsync(cancellationToken);
-                foreach (var entry in entries)
+                foreach (var entry in created)
                 {
                     _auditTrail.Log(entry.Kind, entry.Id, AuditActions.Create, entry.Description, auditNote,
                         AuditTrail.Diff(null, LedgerEntryMapper.ToResponse(entry, 0)));
                 }
+                foreach (var (entry, before) in changed.Where(c => c.Before is not null))
+                {
+                    _auditTrail.Log(entry.Kind, entry.Id, AuditActions.Update, entry.Description, auditNote,
+                        AuditTrail.Diff(before, LedgerEntryMapper.ToResponse(entry, 0)));
+                }
                 return true;
             }, cancellationToken);
 
-            return new EtsyImportResponse(fresh.Count, wanted.Count - fresh.Count);
+            return new EtsyAdsSyncResponse(fresh.Count, changed.Count(c => c.Before is not null));
         }
 
-        private static LedgerEntry ToEntry(EtsyAdsMonthDto month, long? categoryId)
+        // Etsy ad expenses of these months by order code (ADS-yyyy-MM), deleted ones included.
+        private async Task<Dictionary<string, LedgerEntry>> ExpensesAsync(IEnumerable<EtsyAdsMonthDto> months, CancellationToken cancellationToken)
+        {
+            var entries = await _unitOfWork.LedgerEntryRepository.GetByOrderCodesAsync(
+                LedgerKinds.Expense, SalesValues.ChannelEtsy, months.Select(m => EtsyAdsCalculator.OrderCode(m.Month)).ToList(), cancellationToken);
+            return entries
+                .GroupBy(e => e.OrderCode!)
+                // Two entries for one month should not exist; prefer the one still in use.
+                .ToDictionary(g => g.Key, g => g.OrderBy(e => e.IsDeleted).ThenBy(e => e.Id).First());
+        }
+
+        // The amount no longer matches what was last taken from Etsy, so the user changed it (re-typing it in EUR counts
+        // as a change too). An entry written before the Etsy amount was remembered counts as changed unless it still
+        // equals the current Etsy amount.
+        private static bool IsEditedByHand(LedgerEntry expense, decimal etsyAmountUsd) =>
+            expense.CurrencyCode != SalesValues.DefaultCurrency
+            || (expense.Details.EtsyAmount is { } synced ? expense.Amount != synced : expense.Amount != etsyAmountUsd);
+
+        private static LedgerDetails Copy(LedgerDetails details, Action<LedgerDetails> change)
+        {
+            var copy = new LedgerDetails
+            {
+                ReferenceCode = details.ReferenceCode, UnitPrice = details.UnitPrice, ItemTotal = details.ItemTotal,
+                DiscountAmount = details.DiscountAmount, DiscountCode = details.DiscountCode, Subtotal = details.Subtotal,
+                ShippingAmount = details.ShippingAmount, TaxAmount = details.TaxAmount, Note = details.Note,
+                InvoiceId = details.InvoiceId, EtsyAmount = details.EtsyAmount,
+            };
+            change(copy);
+            return copy;
+        }
+
+        private string Note(EtsyAdsMonthDto month)
         {
             var label = $"{month.Month[5..]}/{month.Month[..4]}";
-            var code = EtsyAdsCalculator.OrderCode(month.Month);
             var note = $"Tổng phí quảng cáo (Etsy Ads, Offsite Ads) tháng {label} lấy từ Etsy Payments: "
                 + $"{month.Ads.ToString("0.00", CultureInfo.InvariantCulture)} {month.Currency}.";
             if (!month.Currency.Equals("USD", StringComparison.OrdinalIgnoreCase))
             {
                 note += $" Quy đổi ra {month.AdsUsd.ToString("0.00", CultureInfo.InvariantCulture)} USD theo tỷ giá ngày / tháng tự nhập (chưa nhập tính 1 EUR = 1 USD).";
             }
+            if (!month.Complete)
+            {
+                note += $" Tháng chưa hết: số tiền tự cập nhật theo Etsy (lần cuối {Today.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture)}).";
+            }
+            return note;
+        }
 
+        private LedgerEntry ToEntry(EtsyAdsMonthDto month, long? categoryId)
+        {
+            var label = $"{month.Month[5..]}/{month.Month[..4]}";
+            var code = EtsyAdsCalculator.OrderCode(month.Month);
             var entry = new LedgerEntry
             {
                 Kind = LedgerKinds.Expense,
@@ -112,7 +207,7 @@ namespace Fin.Service.Finance.Services
                 SalesChannel = SalesValues.ChannelEtsy,
                 Payee = "Etsy",
                 Source = EntrySources.Etsy,
-                Details = new LedgerDetails { ReferenceCode = code, Note = note },
+                Details = new LedgerDetails { ReferenceCode = code, Note = Note(month), EtsyAmount = month.AdsUsd },
             };
             entry.SetAmounts(month.AdsUsd, 0);
             return entry;

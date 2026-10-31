@@ -9,13 +9,15 @@ namespace Fin.Tests.Unit.Support
     // Unit of work keeping ledger entries, expense categories, exchange rates and audit logs in memory.
     // Only what the Etsy and exchange-rate handlers use is implemented; anything else throws.
     public sealed class InMemoryFinanceUnitOfWork : IFinanceUnitOfWork,
-        ILedgerEntryRepository, ICategoryRepository, IFxMonthlyRateRepository, IFxDailyRateRepository, IAuditLogRepository
+        ILedgerEntryRepository, ICategoryRepository, IFxMonthlyRateRepository, IFxDailyRateRepository, IAuditLogRepository,
+        IEtsyListingStatRepository
     {
         private readonly List<LedgerEntry> _pendingEntries = [];
         private readonly List<FxMonthlyRate> _pendingMonthly = [];
         private readonly List<FxMonthlyRate> _removedMonthly = [];
         private readonly List<FxDailyRate> _pendingDaily = [];
         private readonly List<FxDailyRate> _removedDaily = [];
+        private readonly List<EtsyListingDailyStat> _pendingListingStats = [];
         private long _nextId = 1;
 
         public List<LedgerEntry> Entries { get; } = [];
@@ -23,6 +25,7 @@ namespace Fin.Tests.Unit.Support
         public List<FxMonthlyRate> MonthlyRates { get; } = [];
         public List<FxDailyRate> DailyRates { get; } = [];
         public List<AuditLog> AuditLogs { get; } = [];
+        public List<EtsyListingDailyStat> ListingStats { get; } = [];
         public int Commits { get; private set; }
 
         public ILedgerEntryRepository LedgerEntryRepository => this;
@@ -30,6 +33,7 @@ namespace Fin.Tests.Unit.Support
         public IFxMonthlyRateRepository FxMonthlyRateRepository => this;
         public IFxDailyRateRepository FxDailyRateRepository => this;
         public IAuditLogRepository AuditLogRepository => this;
+        public IEtsyListingStatRepository EtsyListingStatRepository => this;
         public IAttachmentRepository AttachmentRepository => throw new NotSupportedException();
         public ICategoryGroupRepository CategoryGroupRepository => throw new NotSupportedException();
         public ITranslationRepository TranslationRepository => throw new NotSupportedException();
@@ -49,6 +53,12 @@ namespace Fin.Tests.Unit.Support
         public InMemoryFinanceUnitOfWork WithDailyRate(DateOnly date, decimal eurToUsd)
         {
             DailyRates.Add(new FxDailyRate { Date = date, EurToUsd = eurToUsd });
+            return this;
+        }
+
+        public InMemoryFinanceUnitOfWork WithListingStat(long listingId, DateOnly date, int views, int favorites = 0)
+        {
+            ListingStats.Add(new EtsyListingDailyStat { ListingId = listingId, Date = date, Views = views, Favorites = favorites });
             return this;
         }
 
@@ -74,6 +84,8 @@ namespace Fin.Tests.Unit.Support
             _pendingMonthly.Clear();
             _removedMonthly.Clear();
             _pendingDaily.Clear();
+            ListingStats.AddRange(_pendingListingStats);
+            _pendingListingStats.Clear();
             _removedDaily.Clear();
             Commits++;
             return Task.CompletedTask;
@@ -87,6 +99,11 @@ namespace Fin.Tests.Unit.Support
                 .Where(x => x.Kind == kind && x.SalesChannel == salesChannel && x.OrderCode != null && orderCodes.Contains(x.OrderCode))
                 .Select(x => x.OrderCode!)
                 .ToHashSet());
+
+        public Task<List<LedgerEntry>> GetByOrderCodesAsync(string kind, string salesChannel, IReadOnlyCollection<string> orderCodes, CancellationToken cancellationToken) =>
+            Task.FromResult(Entries
+                .Where(x => x.Kind == kind && x.SalesChannel == salesChannel && x.OrderCode != null && orderCodes.Contains(x.OrderCode))
+                .ToList());
 
         void ILedgerEntryRepository.Add(LedgerEntry entry) => _pendingEntries.Add(entry);
 
@@ -137,6 +154,22 @@ namespace Fin.Tests.Unit.Support
 
         void IFxDailyRateRepository.Add(FxDailyRate rate) => _pendingDaily.Add(rate);
         void IFxDailyRateRepository.Remove(FxDailyRate rate) => _removedDaily.Add(rate);
+
+        // ---- Etsy listing counts per day
+        Task<DateOnly?> IEtsyListingStatRepository.GetFirstDateAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(ListingStats.Count == 0 ? (DateOnly?)null : ListingStats.Min(x => x.Date));
+
+        Task<List<EtsyListingDailyStat>> IEtsyListingStatRepository.GetLatestAsync(DateOnly onOrBefore, CancellationToken cancellationToken) =>
+            Task.FromResult(ListingStats
+                .Where(x => x.Date <= onOrBefore)
+                .GroupBy(x => x.ListingId)
+                .Select(g => g.MaxBy(x => x.Date)!)
+                .ToList());
+
+        Task<List<EtsyListingDailyStat>> IEtsyListingStatRepository.GetByDateAsync(DateOnly date, CancellationToken cancellationToken) =>
+            Task.FromResult(ListingStats.Where(x => x.Date == date).ToList());
+
+        void IEtsyListingStatRepository.Add(EtsyListingDailyStat stat) => _pendingListingStats.Add(stat);
 
         // ---- Audit log
         void IAuditLogRepository.Add(AuditLog log) => AuditLogs.Add(log);

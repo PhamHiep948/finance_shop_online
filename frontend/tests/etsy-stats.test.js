@@ -20,8 +20,16 @@ function setup() {
     etsyStatus: async () => { calls.push("status"); return { ready: true }; },
     etsyListings: async () => { calls.push("listings"); return [{ listingId: 1, title: "Lilie", views: 100, favorites: 10, price: 9, currency: "EUR" }]; },
     etsySales: async (from, to) => { calls.push(`sales ${from} ${to}`); return salesFor(from, to); },
+    // App ghi lượt xem từ 01/09/2026: tháng 9 sản phẩm 1 có 30 lượt xem, khoảng dài hơn thì 60.
+    etsyListingViews: async (from, to) => {
+      calls.push(`views ${from} ${to}`);
+      const n = from >= "2026-09-01" ? 30 : 60;
+      return { from, to, trackedSince: "2026-09-01", complete: from > "2026-09-01", views: n, favorites: 3, listings: [{ listingId: 1, views: n, favorites: 3 }] };
+    },
     etsyFees: async (from, to) => { calls.push(`fees ${from} ${to}`); return { rangeAdsUsd: from >= "2026-09-01" ? 5 : 12, months: [] }; },
     etsyRefresh: async () => { calls.push("refresh"); },
+    etsySyncAds: async (from, to) => { calls.push(`sync ${from} ${to}`); return { created: 1, updated: 0 }; },
+    reload: () => { calls.push("reload"); },
   })(["EtsyStatsPage", "localISO"]);
   EtsyStatsPage.init();
   return { page: EtsyStatsPage, localISO };
@@ -218,8 +226,41 @@ test("mọi phần được hỏi cùng lúc, không chờ nhau", async () => {
   Object.assign(page.s, { preset: "custom", from: "2026-08-01", to: "2026-10-24" });
   const done = page.load(true);
   // Chưa phần nào trả lời mà cả 4 đã được hỏi.
-  assert.deepEqual(calls.map((c) => c.split(" ")[0]).sort(), ["fees", "listings", "sales", "status"]);
+  assert.deepEqual(calls.map((c) => c.split(" ")[0]).sort(), ["fees", "listings", "sales", "status", "views"]);
   await done;
+});
+
+test("lượt xem theo khoảng ngày thay cho tổng từ lúc đăng; tổng vẫn giữ để xem khi rê chuột", async () => {
+  const { page } = setup();
+  Object.assign(page.s, { preset: "custom", from: "2026-09-02", to: "2026-09-30" });
+  await page.load(true);
+  const row = page.rows()[0];
+  assert.deepEqual([row.views, row.favorites, row.totalViews, row.totalFavorites, row.sinceViews], [30, 3, 100, 10, null]);
+  assert.match(page.kpisHtml(), /<div class="value">30 · 3<\/div>/);
+  assert.match(page.listingsHtml(), /Tổng từ lúc đăng: 100 lượt xem, 10 yêu thích/);
+});
+
+test("khoảng bắt đầu trước ngày app ghi đầu tiên: hiện tổng từ lúc đăng, kèm phần tăng từ ngày bắt đầu ghi", async () => {
+  const { page } = setup();
+  // App ghi từ 01/09 nên 3 tháng từ 01/08 chỉ có phần tăng từ 01/09 (60), nhỏ hơn số thật: không hiện như lượt xem cả khoảng.
+  Object.assign(page.s, { preset: "custom", from: "2026-08-01", to: "2026-10-24" });
+  await page.load(true);
+  assert.equal(page.periodViews(), false);
+  const row = page.rows()[0];
+  assert.deepEqual([row.views, row.favorites, row.sinceViews], [100, 10, 60]);
+  assert.match(page.kpisHtml(), /<div class="value">100 · 10<\/div>/);
+  assert.match(page.viewsHint(), /tổng từ lúc đăng · từ 01\/09\/2026/);
+  assert.match(page.listingsHtml(), /\+60 từ 01\/09/);
+});
+
+test("chưa có ngày nào để trừ (mới bắt đầu ghi hôm nay) thì hiện tổng từ lúc đăng", () => {
+  const { page, localISO } = setup();
+  const today = localISO(new Date());
+  page.s.listings = [{ listingId: 1, title: "Lilie", views: 100, favorites: 10 }];
+  page.s.views = { trackedSince: today, complete: false, listings: [{ listingId: 1, views: 0, favorites: 0 }] };
+  assert.equal(page.periodViews(), false);
+  assert.equal(page.rows()[0].views, 100);
+  assert.match(page.viewsHint(), /từ hôm nay/);
 });
 
 test("kết quả của khoảng ngày cũ về muộn thì bị bỏ", async () => {
@@ -230,4 +271,46 @@ test("kết quả của khoảng ngày cũ về muộn thì bị bỏ", async ()
   const second = page.load(false);
   await Promise.all([first, second]);
   assert.equal(page.s.sales.orders, 2);
+});
+
+// ---- Tiền quảng cáo tự vào Khoản chi
+
+const M = (o) => ({ month: "2026-10", ads: 10, adsUsd: 11.6, currency: "EUR", complete: false, imported: false, deleted: false, edited: false, expenseId: null, expenseAmount: null, ...o });
+
+test("tháng có quảng cáo mà chưa ghi, hoặc số đã đổi, thì cần cập nhật; khoản sửa tay / đã xóa thì không", () => {
+  const { page } = setup();
+  assert.equal(page.adsPending({ months: [M({})] }), true);
+  assert.equal(page.adsPending({ months: [M({ imported: true, expenseId: 5, expenseAmount: 9 })] }), true);
+  assert.equal(page.adsPending({ months: [M({ imported: true, expenseId: 5, expenseAmount: 11.6 })] }), false);
+  assert.equal(page.adsPending({ months: [M({ imported: true, edited: true, expenseId: 5, expenseAmount: 7 })] }), false);
+  assert.equal(page.adsPending({ months: [M({ imported: true, deleted: true, expenseId: 5, expenseAmount: 9 })] }), false);
+  assert.equal(page.adsPending({ months: [M({ ads: 0, adsUsd: 0 })] }), false);
+});
+
+test("mở trang mà có tháng chờ ghi thì tự cập nhật Khoản chi ngay", async () => {
+  const { page } = setup();
+  Object.assign(page.s, { preset: "custom", from: "2026-08-01", to: "2026-10-24" });
+  const orig = page.adsPending;
+  let asked = 0;
+  page.adsPending = () => asked++ === 0; // lần đầu còn tháng chờ ghi, sau khi ghi thì hết
+  await page.load(true);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok(calls.includes("sync 2026-08-01 2026-10-24"));
+  assert.ok(calls.includes("reload"));
+  assert.equal(page.s.syncing, false);
+  page.adsPending = orig;
+});
+
+test("trạng thái mỗi tháng bấm được, mở đúng khoản chi", () => {
+  const { page } = setup();
+  page.s.fees = { months: [
+    M({ imported: true, expenseId: 41, expenseAmount: 11.6 }),
+    M({ month: "2026-09", complete: true, imported: true, edited: true, expenseId: 42, expenseAmount: 7 }),
+    M({ month: "2026-08", complete: true, imported: true, deleted: true, expenseId: 43, expenseAmount: 4 }),
+  ] };
+  const html = page.feesHtml();
+  assert.match(html, /href="#\/expenses\?view=41"/);
+  assert.match(html, /href="#\/expenses\?view=42"[^>]*>.*Đã sửa tay/);
+  assert.doesNotMatch(html, /view=43/);
+  assert.match(html, /Đã xóa ở Khoản chi/);
 });

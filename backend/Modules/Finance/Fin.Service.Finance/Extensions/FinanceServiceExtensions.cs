@@ -25,6 +25,7 @@ namespace Fin.Service.Finance.Extensions
             services.AddScoped<AuditTrail>();
             services.AddScoped<EtsyOrderImporter>();
             services.AddScoped<EtsyAdsImporter>();
+            services.AddScoped<EtsyListingStats>();
             services.AddScoped<TrashPurger>();
             services.AddSingleton<EtsyAutoSyncRunner>();
 

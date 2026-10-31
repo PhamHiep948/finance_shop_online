@@ -1,5 +1,7 @@
 // Trang Sản phẩm & Quảng cáo (#/etsy-stats): sản phẩm nào nhiều lượt xem, và tổng tiền quảng cáo theo tháng.
-// Lượt xem / yêu thích là tổng từ lúc đăng sản phẩm (Etsy không cho xem theo kỳ); số bán tính theo khoảng thời gian chọn.
+// Etsy chỉ cho tổng lượt xem / yêu thích từ lúc đăng, nên backend ghi lại số đó mỗi ngày; lượt xem theo khoảng ngày
+// là hiệu của hai ngày đã ghi. Khoảng bắt đầu trước ngày app ghi đầu tiên thì không tính được (chỉ có phần tăng từ ngày
+// đó, nhỏ hơn số thật nhiều), nên hiện tổng từ lúc đăng kèm phần tăng đã ghi được. Số bán tính theo khoảng thời gian chọn.
 // Tiền quảng cáo lấy từ sổ Etsy Payments; hết tháng, backend tự ghi tháng đó thành một khoản chi "Quảng cáo".
 const ES_PRESETS = [["month", "Tháng này"], [3, "3 tháng"], [6, "6 tháng"], [12, "12 tháng"]];
 // Số bán lấy theo đơn Etsy: mỗi lần tối đa 1 năm (giới hạn của backend).
@@ -17,7 +19,8 @@ const EtsyStatsPage = {
     this.s = {
       // preset: "month" | 3 | 6 | 12 | "custom" (tự chọn từ ngày → đến ngày).
       preset: 3, from: "", to: "", sort: "views", sortDir: "desc", search: "", page: 1,
-      status: null, listings: null, sales: null, fees: null, listingsError: "", salesError: "", feesError: "",
+      status: null, listings: null, sales: null, fees: null, views: null,
+      listingsError: "", salesError: "", feesError: "", viewsError: "",
       loading: false, loaded: false,
     };
   },
@@ -77,6 +80,7 @@ const EtsyStatsPage = {
     if (all) s.listings = null;
     s.sales = null;
     s.fees = null;
+    s.views = null;
     this.render(this.root);
     const show = () => { if (current.page === this) this.render(this.root); };
     // Kết quả của khoảng ngày cũ (đã đổi ngày trong lúc chờ) thì bỏ.
@@ -86,8 +90,16 @@ const EtsyStatsPage = {
       etsySales(r.from, r.to).then(
         (v) => { if (same()) { s.sales = v; s.salesError = ""; } },
         (e) => { if (same()) s.salesError = e.message; }).finally(show),
+      etsyListingViews(r.from, r.to).then(
+        (v) => { if (same()) { s.views = v; s.viewsError = ""; } },
+        (e) => { if (same()) s.viewsError = e.message; }).finally(show),
       etsyFees(r.from, r.to).then(
-        (v) => { if (same()) { s.fees = v; s.feesError = ""; } },
+        (v) => {
+          if (!same()) return;
+          s.fees = v;
+          s.feesError = "";
+          if (this.adsPending(v) && !s.syncing) this.syncAds();
+        },
         (e) => { if (same()) s.feesError = e.message; }).finally(show),
     ];
     if (all) {
@@ -100,6 +112,33 @@ const EtsyStatsPage = {
     s.loading = false;
     s.loaded = true;
     show();
+  },
+
+  /** Tháng có tiền quảng cáo mà Khoản chi chưa có, hoặc số trong Khoản chi đã cũ (trừ khoản đã sửa tay / đã xóa). */
+  adsPending(fees) {
+    return (fees?.months || []).some((m) => !m.deleted && !m.edited && m.adsUsd > 0
+      && (!m.imported || Number(m.expenseAmount) !== Number(m.adsUsd)));
+  },
+
+  /** Ghi / cập nhật tiền quảng cáo vào Khoản chi ngay (không chờ lượt tự động mỗi giờ), rồi tải lại bảng. */
+  async syncAds() {
+    const s = this.s;
+    const key = s.rangeKey;
+    const r = this.range();
+    s.syncing = true;
+    try {
+      const res = await etsySyncAds(r.from, r.to);
+      if (res.created || res.updated) {
+        toast(`Đã cập nhật tiền quảng cáo vào Khoản chi (${res.created} tháng mới, ${res.updated} tháng cập nhật)`);
+        reload();
+      }
+      const fees = await etsyFees(r.from, r.to);
+      if (s.rangeKey === key) s.fees = fees;
+    } catch (e) {
+      if (s.rangeKey === key) s.feesError = e.message;
+    }
+    s.syncing = false;
+    if (current.page === this) this.render(this.root);
   },
 
   /** "Làm mới": bỏ dữ liệu Etsy backend đang nhớ rồi tải lại tất cả. */
@@ -151,7 +190,6 @@ const EtsyStatsPage = {
 
   kpisHtml() {
     const s = this.s;
-    const list = s.listings || [];
     const wait = '<span class="muted">…</span>';
     const card = (label, value, ico, tone, hint) => `
       <article class="card kpi">
@@ -164,13 +202,16 @@ const EtsyStatsPage = {
     const ads = s.fees ? Number(s.fees.rangeAdsUsd) || 0 : null;
     const share = sales && ads != null && sales.revenue > 0 ? ` · bằng ${(ads / sales.revenue * 100).toFixed(1)}% doanh thu` : "";
     const range = esc(this.rangeLabel());
+    const rows = this.rows();
+    const sum = (k) => this.num(rows.reduce((t, l) => t + l[k], 0));
+    const viewsReady = s.listings && (s.views || s.viewsError);
     return `
       <div class="kpis">
         ${card("Đơn hàng", sales ? this.num(sales.orders) : s.salesError ? "—" : wait, "package", "green", sales ? `${this.num(sales.items)} sản phẩm · ${range}` : range)}
         ${card("Doanh thu", sales ? money(sales.revenue, store.ccy) : s.salesError ? "—" : wait, "trending-up", "blue", `trước thuế, như Khoản thu · ${range}`)}
         ${card("Tiền quảng cáo", ads != null ? money(ads, store.ccy) : s.feesError ? "—" : wait, "trending-down", "red", `${range}${share}`)}
-        ${card("Lượt xem · Yêu thích", s.listings ? `${this.num(list.reduce((t, l) => t + l.views, 0))} · ${this.num(list.reduce((t, l) => t + l.favorites, 0))}` : s.listingsError ? "—" : wait,
-          "eye", "purple", "tổng từ lúc đăng — Etsy không cho xem theo ngày")}
+        ${card("Lượt xem · Yêu thích", viewsReady ? `${sum("views")} · ${sum("favorites")}` : s.listingsError ? "—" : wait,
+          "eye", "purple", esc(this.viewsHint()))}
       </div>`;
   },
 
@@ -181,13 +222,62 @@ const EtsyStatsPage = {
     return Number(l[key]) || 0;
   },
 
-  /** Sản phẩm kèm số bán / số đơn / tiền hàng của khoảng ngày đang chọn (chưa tải xong thì 0). */
+  /**
+   * Lượt xem của khoảng ngày có đủ chưa: app phải đã ghi số từ trước ngày đầu của khoảng (backend báo `complete`).
+   * Chưa đủ thì hiện tổng từ lúc đăng, không hiện phần tăng thiếu ngày như thể là lượt xem cả khoảng.
+   */
+  periodViews() {
+    const v = this.s.views;
+    return !!(v && v.complete && v.trackedSince);
+  },
+
+  /** Đã ghi được ít nhất hai ngày trong khoảng nhưng chưa đủ cả khoảng: có phần tăng từ ngày app bắt đầu ghi. */
+  partialViews() {
+    const v = this.s.views;
+    return !!(v && !v.complete && v.trackedSince && v.trackedSince < this.range().to);
+  },
+
+  /** Ghi chú dưới bảng sản phẩm về cách tính lượt xem. */
+  viewsNote() {
+    const v = this.s.views;
+    const how = "Etsy chỉ cho tổng lượt xem từ lúc đăng, nên app ghi lại số đó mỗi ngày (khi mở trang này và mỗi giờ lúc app chạy); lượt xem theo khoảng ngày là phần tăng thêm giữa hai ngày đã ghi.";
+    if (!v?.trackedSince) return `Lượt xem và yêu thích là tổng từ lúc đăng sản phẩm. ${how}`;
+    if (this.periodViews()) return how;
+    const since = `App bắt đầu ghi từ ${dmy(v.trackedSince)}, những ngày trước đó không có số nên chưa tính được lượt xem của khoảng này.`;
+    const extra = this.partialViews() ? ` Số nhỏ "+… từ ${dmy(v.trackedSince)}" là lượt xem tăng thêm từ ngày đó.` : "";
+    return `Đang hiện tổng từ lúc đăng. ${since}${extra} ${how}`;
+  },
+
+  /** Dòng nhỏ dưới ô Lượt xem: đang tính theo khoảng nào. */
+  viewsHint() {
+    const v = this.s.views;
+    if (this.periodViews()) return this.rangeLabel();
+    if (this.partialViews()) {
+      return `tổng từ lúc đăng · từ ${dmy(v.trackedSince)} (ngày app bắt đầu ghi): +${this.num(v.views)} xem · +${this.num(v.favorites)} thích`;
+    }
+    if (v?.trackedSince) return "tổng từ lúc đăng — app bắt đầu ghi theo ngày từ hôm nay";
+    return "tổng từ lúc đăng";
+  },
+
+  /**
+   * Sản phẩm kèm số bán / số đơn / tiền hàng của khoảng ngày đang chọn (chưa tải xong thì 0).
+   * Có số theo ngày thì `views` / `favorites` là của khoảng ngày; tổng từ lúc đăng giữ ở `totalViews` / `totalFavorites`.
+   * Chưa đủ số cả khoảng thì `views` là tổng từ lúc đăng, `sinceViews` = phần tăng từ ngày app bắt đầu ghi.
+   */
   rows() {
     const s = this.s;
     const by = new Map((s.sales?.listings || []).map((x) => [x.listingId, x]));
+    const full = this.periodViews();
+    const recorded = full || this.partialViews() ? new Map(s.views.listings.map((x) => [x.listingId, x])) : null;
     return (s.listings || []).map((l) => {
       const x = by.get(l.listingId);
-      return { ...l, sold: x?.sold ?? l.sold ?? 0, orders: x?.orders ?? l.orders ?? 0, revenue: x?.revenue ?? l.revenue ?? 0 };
+      const v = recorded?.get(l.listingId);
+      return {
+        ...l, totalViews: l.views, totalFavorites: l.favorites,
+        views: full ? v?.views ?? 0 : l.views, favorites: full ? v?.favorites ?? 0 : l.favorites,
+        sinceViews: recorded && !full ? v?.views ?? 0 : null,
+        sold: x?.sold ?? l.sold ?? 0, orders: x?.orders ?? l.orders ?? 0, revenue: x?.revenue ?? l.revenue ?? 0,
+      };
     });
   },
 
@@ -250,7 +340,8 @@ const EtsyStatsPage = {
       const all = this.sortedListings();
       const { pages, start, rows } = this.pageOf(all);
       pager = this.pagerHtml(all.length, pages);
-      const maxViews = Math.max(1, ...s.listings.map((l) => l.views));
+      const maxViews = Math.max(1, ...all.map((l) => l.views));
+      const total = (l) => (this.periodViews() ? ` title="Tổng từ lúc đăng: ${this.num(l.totalViews)} lượt xem, ${this.num(l.totalFavorites)} yêu thích"` : "");
       body = rows.length ? rows.map((l, i) => `
         <tr>
           <td class="muted">${start + i + 1}</td>
@@ -258,15 +349,16 @@ const EtsyStatsPage = {
             <div class="es-product">
               ${l.imageUrl ? `<img class="es-thumb" src="${esc(l.imageUrl)}" alt="" loading="lazy" />` : `<span class="es-thumb es-thumb-empty">${icon("image", 16)}</span>`}
               <div class="es-product-text">
-                <a href="${esc(l.url)}" target="_blank" rel="noopener" class="es-title" title="${esc(l.title)}">${esc(l.title)}</a>
+                <a href="${esc(l.url)}" target="_blank" rel="noopener" class="es-title" title="${esc(l.title)}" translate="no">${esc(l.title)}</a>
                 ${l.state === "sold_out" ? '<span class="badge warn">Hết hàng</span>' : ""}
               </div>
             </div>
           </td>
-          <td class="amount">
+          <td class="amount"${total(l)}>
             <div class="es-views"><span>${this.num(l.views)}</span><span class="es-bar"><span style="width:${(l.views / maxViews * 100).toFixed(1)}%"></span></span></div>
+            ${l.sinceViews != null ? `<div class="cell-sub" title="Lượt xem tăng thêm từ ngày app bắt đầu ghi">+${this.num(l.sinceViews)} từ ${esc(dmy(s.views.trackedSince).slice(0, 5))}</div>` : ""}
           </td>
-          <td class="amount">${this.num(l.favorites)}</td>
+          <td class="amount"${total(l)}>${this.num(l.favorites)}</td>
           <td class="amount">${!s.sales ? '<span class="muted">…</span>' : l.sold ? `<b>${this.num(l.sold)}</b>` : '<span class="muted">0</span>'}</td>
           <td class="amount">${!s.sales ? '<span class="muted">…</span>' : l.revenue ? money(l.revenue, store.ccy) : '<span class="muted">—</span>'}</td>
           <td class="amount">${l.views ? `${(l.favorites / l.views * 100).toFixed(1)}%` : "—"}</td>
@@ -275,6 +367,7 @@ const EtsyStatsPage = {
         : '<tr><td colspan="8"><div class="empty-state"><p>Không có sản phẩm nào khớp.</p></div></td></tr>';
     }
 
+    const viewsTitle = esc(this.periodViews() ? `Trong ${this.rangeLabel()}` : "Tổng từ lúc đăng sản phẩm");
     const isText = s.sort === "title";
     const dirLabel = s.sortDir === "asc" ? (isText ? "A → Z" : "Thấp → cao") : (isText ? "Z → A" : "Cao → thấp");
     // Tiêu đề cột bấm được để sắp xếp; mũi tên cho biết cột và chiều đang dùng.
@@ -305,7 +398,7 @@ const EtsyStatsPage = {
         <div class="table-wrap">
           <table class="data-table es-table">
             <thead><tr>
-              <th>#</th>${th("title", "Sản phẩm")}${th("views", "Lượt xem", "amount")}${th("favorites", "Yêu thích", "amount")}
+              <th>#</th>${th("title", "Sản phẩm")}${th("views", "Lượt xem", "amount", viewsTitle)}${th("favorites", "Yêu thích", "amount", viewsTitle)}
               ${th("sold", "Đã bán", "amount", `Số lượng bán từ ${esc(this.rangeLabel())}`)}
               ${th("revenue", "Tiền hàng", "amount", `Giá × số lượng bán từ ${esc(this.rangeLabel())}`)}
               ${th("likeRate", "Tỷ lệ thích", "amount", "Yêu thích ÷ lượt xem")}${th("price", "Giá", "amount")}
@@ -314,7 +407,7 @@ const EtsyStatsPage = {
           </table>
         </div>
         ${pager}
-        <p class="es-note muted">${icon("info", 13)} Lượt xem và yêu thích là tổng từ lúc đăng sản phẩm — Etsy không cho lấy theo tháng qua API.
+        <p class="es-note muted">${icon("info", 13)} ${esc(this.viewsNote())}
           Số lượt ghé shop, tỷ lệ chuyển đổi, nguồn truy cập chỉ có trong trang Stats của Etsy.</p>
       </article>`;
   },
@@ -328,12 +421,14 @@ const EtsyStatsPage = {
     else if (!s.fees) body = '<tr><td colspan="7"><div class="empty-state"><p>Đang tải…</p></div></td></tr>';
     else body = s.fees.months.map((m) => {
       const [y, mo] = m.month.split("-").map(Number);
-      const next = new Date(y, mo, 1);
+      const link = (cls, text, title) =>
+        `<a class="badge ${cls}" href="#/expenses?view=${m.expenseId}" title="${title}">${icon("external-link", 12)} ${text}</a>`;
       let state;
-      if (m.imported) state = `<a class="badge ok" href="#/expenses" title="Mở Khoản chi để xem / sửa">${icon("check", 12)} Đã ghi vào Khoản chi</a>`;
-      else if (!m.complete) state = `<span class="badge info" title="Hết tháng, app tự ghi vào Khoản chi">${m.month === thisMonth ? "Tự ghi ngày" : "Ghi ngày"} ${dmy(localISO(next))}</span>`;
+      if (m.imported && m.deleted) state = '<span class="muted" title="Khoản chi này đã bị xóa (xem Thùng rác); app không ghi lại">Đã xóa ở Khoản chi</span>';
+      else if (m.imported && m.edited) state = link("warn", `Đã sửa tay: ${money(usdOf(m.expenseAmount, m.expenseCurrency, lastDayOfMonth(m.month)), store.ccy, lastDayOfMonth(m.month))}`, "Số tiền đã sửa tay ở Khoản chi nên app không tự cập nhật nữa. Bấm để mở");
+      else if (m.imported) state = link("ok", m.month === thisMonth ? "Đã ghi · tự cập nhật" : "Đã ghi vào Khoản chi", "Bấm để mở khoản chi này");
       else if (!(m.adsUsd > 0)) state = '<span class="muted">Không chạy quảng cáo</span>';
-      else state = '<span class="muted" title="App chỉ tự ghi tháng vừa hết; tháng cũ hơn thêm tay ở Khoản chi nếu cần">Chưa ghi</span>';
+      else state = `<span class="badge info">${s.syncing ? "Đang ghi…" : "Chờ ghi"}</span>`;
       return `
         <tr>
           <td><b>Tháng ${mo}/${y}</b></td>
@@ -354,7 +449,7 @@ const EtsyStatsPage = {
             <h3 class="es-card-title">${icon("trending-down", 16)} Tiền quảng cáo theo tháng</h3>
           </div>
         </div>
-        ${adsError ? `<div class="etsy-status warn es-ads-warn">${icon("triangle-alert", 16)}<div>Chưa tự ghi được tiền quảng cáo tháng trước: ${esc(adsError)} App sẽ thử lại sau.</div></div>` : ""}
+        ${adsError ? `<div class="etsy-status warn es-ads-warn">${icon("triangle-alert", 16)}<div>Chưa tự cập nhật được tiền quảng cáo vào Khoản chi: ${esc(adsError)} App sẽ thử lại sau.</div></div>` : ""}
         <div class="table-wrap">
           <table class="data-table es-table">
             <thead><tr>
@@ -369,7 +464,8 @@ const EtsyStatsPage = {
             <tbody>${body}</tbody>
           </table>
         </div>
-        <p class="es-note muted">${icon("info", 13)} Hết tháng, tiền quảng cáo của tháng đó tự ghi vào Khoản chi (loại "Quảng cáo", ngày cuối tháng). Số tiền sửa được ở Khoản chi.</p>
+        <p class="es-note muted">${icon("info", 13)} Có tiền quảng cáo là tự ghi vào Khoản chi (mỗi tháng một khoản loại "Quảng cáo") và tự cập nhật khi Etsy trừ thêm.
+          Bấm vào trạng thái để mở khoản chi đó. Khoản đã sửa tay hoặc đã xóa thì app để nguyên.</p>
       </article>`;
   },
 

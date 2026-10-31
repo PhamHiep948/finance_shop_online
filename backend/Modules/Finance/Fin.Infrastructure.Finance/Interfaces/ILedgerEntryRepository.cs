@@ -25,6 +25,9 @@ namespace Fin.Infrastructure.Finance.Interfaces
 
         Task<HashSet<string>> GetExistingOrderCodesAsync(string salesChannel, IReadOnlyCollection<string> orderCodes, CancellationToken cancellationToken, string kind = LedgerKinds.Income);
 
+        // Tracked entries (deleted ones included) of a kind and sales channel with one of these order codes.
+        Task<List<LedgerEntry>> GetByOrderCodesAsync(string kind, string salesChannel, IReadOnlyCollection<string> orderCodes, CancellationToken cancellationToken);
+
         void Add(LedgerEntry entry);
 
         void Remove(LedgerEntry entry);

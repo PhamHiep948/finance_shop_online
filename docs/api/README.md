@@ -56,11 +56,11 @@ Ngoại lệ không bọc `Response<T>`: `GET /attachments/{id}` (trả file), `
 | POST | `/{…}` | `CreateLedgerEntryCommand` | body: `date, description, categoryId, amount, taxPercent, orderCode, saleRegion, salesChannel, productQty, payee, originScope, paymentMethod, referenceCode, unitPrice, itemTotal, discountAmount, discountCode, subtotal, shippingAmount, taxAmount, note, invoiceId` |
 | PUT | `/{…}/{id}` | `UpdateLedgerEntryCommand` | khoản Etsy → `LED_ERR_002` |
 | DELETE | `/{…}/{id}` | `DeleteLedgerEntryCommand` | chuyển vào thùng rác |
-| PUT | `/incomes/{id}/cost` | `SetIncomeCostCommand` | body `{ amount, taxPercent, invoiceId, date }`; `amount` = 0 → bỏ; trả khoản chi hoặc `null` |
+| PUT | `/incomes/{id}/cost` | `SetIncomeCostCommand` | body `{ amount, currencyCode, taxPercent, invoiceId, date }` (`currencyCode` USD / EUR = loại tiền đã gõ, trống = USD); `amount` = 0 → bỏ; trả khoản chi hoặc `null` |
 | GET | `/{…}/{id}/attachments` | `GetAttachmentsQuery` | `[{ id, entryId, originalName, contentType, size, createdAt }]` |
 | POST | `/{…}/{id}/attachments` | `UploadAttachmentsCommand` | `multipart/form-data`, trường `files`, tối đa 10 file × 10 MB |
 
-Mỗi khoản (`LedgerEntryResponse`) gồm: `id, kind, date, description, categoryId, amount, taxPercent, amountAfterTax, currencyCode, orderCode, saleRegion, salesChannel, productQty, payee, originScope, paymentMethod, source, linkedIncomeId, referenceCode, unitPrice, itemTotal, discountAmount, discountCode, subtotal, shippingAmount, taxAmount, note, invoiceId, attachmentCount, createdAt, updatedAt, deletedAt`.
+Mỗi khoản (`LedgerEntryResponse`) gồm: `id, kind, date, description, categoryId, amount, taxPercent, amountAfterTax, currencyCode, orderCode, saleRegion, salesChannel, productQty, payee, originScope, paymentMethod, source, linkedIncomeId, referenceCode, unitPrice, itemTotal, discountAmount, discountCode, subtotal, shippingAmount, taxAmount, note, invoiceId, attachmentCount, createdAt, updatedAt, deletedAt`. Số tiền lưu đúng loại tiền lúc nhập (`currencyCode` = `USD` hoặc `EUR`, không quy đổi); body thêm / sửa gửi kèm `currencyCode` (trống = USD, loại khác bị từ chối).
 
 ### Chứng từ
 
@@ -108,13 +108,15 @@ Mỗi khoản (`LedgerEntryResponse`) gồm: `id, kind, date, description, categ
 | POST | `/etsy/disconnect` | `DisconnectEtsyCommand` | |
 | GET | `/etsy/orders?from&to` | `GetEtsyOrdersQuery` | ngày `yyyy-MM-dd`, tối đa 1 năm; mỗi đơn có `imported` |
 | POST | `/etsy/import` | `ImportEtsyOrdersCommand` | body `{ orders }` → `{ imported, skipped }` |
-| GET | `/etsy/listings` | `GetEtsyListingsQuery` | sản phẩm đang bán / hết hàng, xếp theo lượt xem; `views`, `favorites` là tổng từ lúc đăng. Backend nhớ 10 phút. Cần quyền `listings_r` |
+| GET | `/etsy/listings` | `GetEtsyListingsQuery` | sản phẩm đang bán / hết hàng, xếp theo lượt xem; `views`, `favorites` là tổng từ lúc đăng. Backend nhớ 10 phút và ghi lại số này làm số của hôm nay (bảng `etsy_listing_daily`). Cần quyền `listings_r` |
+| GET | `/etsy/listings/views?from&to` | `GetEtsyListingViewsQuery` | ngày yyyy-MM-dd (≤ 1 năm) → `{ from, to, trackedSince, complete, views, favorites, listings: [{ listingId, views, favorites }] }`: lượt xem / yêu thích tăng thêm trong khoảng = số đã ghi ngày cuối − số đã ghi trước ngày đầu. `trackedSince` là ngày đầu tiên app ghi (null = chưa ghi); `complete = false` khi khoảng bắt đầu trước ngày đó. Số được ghi mỗi lần đọc sản phẩm và mỗi giờ cùng lượt cập nhật quảng cáo |
 | GET | `/etsy/sales?from&to` | `GetEtsySalesQuery` | ngày yyyy-MM-dd (≤ 1 năm) → `{ orders, items, revenue, listings: [{ listingId, sold, orders, revenue }] }`; `revenue` (USD, trước thuế) tính như Khoản thu |
+| POST | `/etsy/fees/sync?from&to` | `SyncEtsyAdsCommand` | ghi / cập nhật ngay khoản chi "Quảng cáo" của các tháng trong khoảng → `{ created, updated }`; khoản đã sửa tay, đã xóa hoặc thuộc kỳ khóa sổ thì để nguyên |
 | POST | `/etsy/refresh` | `RefreshEtsyDataCommand` | bỏ dữ liệu Etsy backend đang nhớ (nút "Làm mới") |
-| GET | `/etsy/fees?from&to` | `GetEtsyFeesQuery` | ngày yyyy-MM-dd (≤ 1 năm) → `{ rangeAds, rangeAdsUsd, currency, months: [{ month, etsyAds, offsiteAds, refunds, ads, currency, adsUsd, complete, imported }], types: [{ ledgerType, description, count, amount, isAds }] }` lấy từ sổ Etsy Payments; `range*` chỉ tính đúng các ngày đã chọn, `months` là trọn các tháng có trong khoảng |
+| GET | `/etsy/fees?from&to` | `GetEtsyFeesQuery` | ngày yyyy-MM-dd (≤ 1 năm) → `{ rangeAds, rangeAdsUsd, currency, months: [{ month, etsyAds, offsiteAds, refunds, ads, currency, adsUsd, complete, imported, expenseId, expenseAmount, expenseCurrency, edited, deleted }], types: [{ ledgerType, description, count, amount, isAds }] }` lấy từ sổ Etsy Payments; `range*` chỉ tính đúng các ngày đã chọn, `months` là trọn các tháng có trong khoảng |
 | GET | `/etsy/autosync` | `GetEtsyAutoSyncQuery` | `{ enabled, intervalMinutes, lookbackDays, lastRunAt, lastImported, totalImported, lastError, running, ready, nextRunAt, intervals }` |
 | PUT | `/etsy/autosync` | `ConfigureEtsyAutoSyncCommand` | body `{ enabled, intervalMinutes }` (15, 30, 60, 360, 1440) |
-| POST | `/etsy/autosync/run` | `RunEtsyAutoSyncCommand` | chạy ngay; chưa kết nối → `ETS_ERR_001`. Mỗi lần chạy nhập đơn mới (`lastImported`). Riêng tiền quảng cáo: hễ Etsy đã kết nối, sang tháng mới backend tự ghi tháng vừa hết thành một khoản chi "Quảng cáo" (mã `ADS-yyyy-MM`, sửa được ở Khoản chi), lỗi thì thử lại mỗi giờ (`adsMonthDone`, `lastAdsImported`, `adsError`) |
+| POST | `/etsy/autosync/run` | `RunEtsyAutoSyncCommand` | chạy ngay; chưa kết nối → `ETS_ERR_001`. Mỗi lần chạy nhập đơn mới (`lastImported`). Riêng tiền quảng cáo: hễ Etsy đã kết nối, mỗi giờ (và ngay khi bật app) backend ghi / cập nhật khoản chi "Quảng cáo" của 12 tháng gần nhất (mã `ADS-yyyy-MM`, tháng đang chạy cũng ghi); khoản đã sửa tay hoặc đã xóa thì để nguyên (`adsLastRunAt`, `lastAdsImported`, `adsError`) |
 
 ## Mã lỗi (`ErrorCodeEnum`)
 

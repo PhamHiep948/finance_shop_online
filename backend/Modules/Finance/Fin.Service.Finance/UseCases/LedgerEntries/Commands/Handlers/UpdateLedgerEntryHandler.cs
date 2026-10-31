@@ -50,9 +50,10 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
             // Source and the link to an income are not part of the form, so they stay untouched here.
             if (entry.IsEtsyAds)
             {
-                var (orderCode, salesChannel) = (entry.OrderCode, entry.SalesChannel);
+                var (orderCode, salesChannel, etsyAmount) = (entry.OrderCode, entry.SalesChannel, entry.Details.EtsyAmount);
                 LedgerEntryAssembler.Apply(entry, payload);
                 (entry.OrderCode, entry.SalesChannel) = (orderCode, salesChannel);
+                entry.Details.EtsyAmount = etsyAmount;
             }
             else if (entry.IsFromEtsy)
             {

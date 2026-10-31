@@ -9,7 +9,6 @@ namespace Fin.Model.Dto.Finance.Responses
         public int LastImported { get; set; }
         public int TotalImported { get; set; }
         public int LastAdsImported { get; set; }
-        public string? AdsMonthDone { get; set; }
         public DateTime? AdsLastRunAt { get; set; }
         public string? AdsError { get; set; }
         public string? LastError { get; set; }

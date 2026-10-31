@@ -120,6 +120,17 @@ namespace Fin.Infrastructure.Finance.Repositories
             return codes.ToHashSet();
         }
 
+        public async Task<List<LedgerEntry>> GetByOrderCodesAsync(string kind, string salesChannel, IReadOnlyCollection<string> orderCodes, CancellationToken cancellationToken)
+        {
+            if (orderCodes.Count == 0)
+            {
+                return [];
+            }
+            return await _dbContext.LedgerEntries
+                .Where(x => x.Kind == kind && x.SalesChannel == salesChannel && x.OrderCode != null && orderCodes.Contains(x.OrderCode))
+                .ToListAsync(cancellationToken);
+        }
+
         public void Add(LedgerEntry entry) => _dbContext.LedgerEntries.Add(entry);
 
         public void Remove(LedgerEntry entry) => _dbContext.LedgerEntries.Remove(entry);

@@ -1,5 +1,6 @@
 using Fin.Infrastructure.Finance.Models;
 using Fin.Model.Dto.Finance.Responses;
+using Fin.Service.Finance.Services;
 using Fin.Service.Finance.UseCases.Etsy.Commands;
 using Fin.Service.Finance.UseCases.Etsy.Commands.Handlers;
 using Fin.Service.Finance.UseCases.Etsy.Queries;
@@ -13,6 +14,17 @@ namespace Fin.Tests.Unit.Services
     {
         private readonly FakeEtsyClient _etsy = new();
         private readonly InMemoryFinanceUnitOfWork _unitOfWork = new();
+        private static readonly DateOnly Today = new(2026, 10, 24);
+
+        private EtsyListingStats Stats() => new(_unitOfWork, new FixedTimeProvider(Today.ToDateTime(new TimeOnly(10, 0))));
+
+        private async Task<EtsyListingViewsResponse> ViewsAsync(string from, string to = "2026-10-24")
+        {
+            var result = await new GetEtsyListingViewsHandler(_etsy, Stats())
+                .Handle(new GetEtsyListingViewsQuery { From = from, To = to }, CancellationToken.None);
+            Assert.True(result.Succeeded);
+            return result.Data!;
+        }
 
         private static EtsyListing Listing(long id, int views, int favorites = 0, string state = "active") =>
             new(id, $"Sản phẩm {id}", state, $"https://etsy.com/listing/{id}", null, views, favorites, 3, 12.5m, "EUR");
@@ -24,7 +36,7 @@ namespace Fin.Tests.Unit.Services
 
         private async Task<List<EtsyListingDto>> ListingsAsync()
         {
-            var result = await new GetEtsyListingsHandler(_etsy).Handle(new GetEtsyListingsQuery(), CancellationToken.None);
+            var result = await new GetEtsyListingsHandler(_etsy, Stats()).Handle(new GetEtsyListingsQuery(), CancellationToken.None);
             Assert.True(result.Succeeded);
             return result.Data!;
         }
@@ -74,6 +86,87 @@ namespace Fin.Tests.Unit.Services
             await ListingsAsync();
 
             Assert.Empty(_etsy.ReceiptRanges);
+        }
+
+        // ---- Lượt xem theo khoảng ngày (từ số app ghi lại mỗi ngày)
+
+        [Fact]
+        public async Task Reading_the_listings_records_todays_counts_once_per_day()
+        {
+            _etsy.Listings.Add(Listing(1, 100, 5));
+            await ListingsAsync();
+            _etsy.Listings[0] = Listing(1, 130, 6);
+            await ListingsAsync();
+
+            var row = Assert.Single(_unitOfWork.ListingStats);
+            Assert.Equal((1L, Today, 130, 6), (row.ListingId, row.Date, row.Views, row.Favorites));
+        }
+
+        [Fact]
+        public async Task Period_views_are_the_counts_at_the_end_minus_the_day_before_the_start()
+        {
+            _unitOfWork
+                .WithListingStat(1, new DateOnly(2026, 9, 20), 40, 1)
+                .WithListingStat(1, new DateOnly(2026, 9, 30), 100, 4)
+                .WithListingStat(1, new DateOnly(2026, 10, 15), 160, 6)
+                .WithListingStat(2, new DateOnly(2026, 9, 30), 10);
+            _etsy.Listings.AddRange([Listing(1, 200, 9), Listing(2, 10)]);
+
+            var october = await ViewsAsync("2026-10-01", "2026-10-15");
+            var toToday = await ViewsAsync("2026-10-01");
+
+            Assert.True(october.Complete);
+            Assert.Equal("2026-09-20", october.TrackedSince);
+            var byId = october.Listings.ToDictionary(l => l.ListingId);
+            Assert.Equal((60, 2), (byId[1].Views, byId[1].Favorites));
+            Assert.Equal(0, byId[2].Views);
+            // Today's counts were recorded before working out a period ending today.
+            Assert.Equal((100, 5), (toToday.Views, toToday.Favorites));
+        }
+
+        [Fact]
+        public async Task A_listing_published_after_recording_started_counts_all_its_views()
+        {
+            _unitOfWork.WithListingStat(1, new DateOnly(2026, 9, 1), 50).WithListingStat(2, new DateOnly(2026, 10, 10), 30);
+            _etsy.Listings.AddRange([Listing(1, 50), Listing(2, 30)]);
+
+            var views = await ViewsAsync("2026-10-01");
+
+            Assert.Equal(30, views.Listings.Single(l => l.ListingId == 2).Views);
+        }
+
+        [Fact]
+        public async Task Recording_started_inside_the_period_counts_from_that_day_and_says_so()
+        {
+            _unitOfWork.WithListingStat(1, new DateOnly(2026, 10, 10), 500);
+            _etsy.Listings.Add(Listing(1, 540));
+
+            var views = await ViewsAsync("2026-10-01");
+
+            Assert.False(views.Complete);
+            Assert.Equal("2026-10-10", views.TrackedSince);
+            Assert.Equal(40, views.Views);
+        }
+
+        [Fact]
+        public async Task A_period_before_recording_started_has_no_views()
+        {
+            _unitOfWork.WithListingStat(1, new DateOnly(2026, 10, 10), 500);
+
+            var views = await ViewsAsync("2026-08-01", "2026-09-30");
+
+            Assert.Empty(views.Listings);
+            Assert.Equal(0, views.Views);
+        }
+
+        [Fact]
+        public async Task A_count_etsy_lowered_gives_zero_views()
+        {
+            _unitOfWork.WithListingStat(1, new DateOnly(2026, 9, 30), 500).WithListingStat(1, new DateOnly(2026, 10, 20), 480);
+
+            var views = await ViewsAsync("2026-10-01", "2026-10-20");
+
+            Assert.Equal(0, views.Views);
         }
 
         // ---- Số bán / doanh thu theo khoảng ngày

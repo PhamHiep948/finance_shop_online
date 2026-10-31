@@ -19,5 +19,7 @@ namespace Fin.Infrastructure.Finance.Interfaces
         ICategoryGroupRepository CategoryGroupRepository { get; }
 
         ITranslationRepository TranslationRepository { get; }
+
+        IEtsyListingStatRepository EtsyListingStatRepository { get; }
     }
 }

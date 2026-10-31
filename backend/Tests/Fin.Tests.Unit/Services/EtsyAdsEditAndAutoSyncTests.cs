@@ -29,13 +29,19 @@ namespace Fin.Tests.Unit.Services
 
         private long AdsCategory => _unitOfWork.Categories.Single(c => c.Name == "Quảng cáo").Id;
 
+        private EtsyAdsImporter Importer() =>
+            new(_unitOfWork, _etsy, new AuditTrail(_unitOfWork), EtsyOptionsFor.Shop(), Today, PeriodLockOff());
+
+        private static PeriodLockPolicy PeriodLockOff() =>
+            new(new StaticOptionsMonitor<PeriodLockOptions>(new PeriodLockOptions { Enabled = false }), Today);
+
         private LedgerEntry SeedAdsEntry()
         {
             var entry = new LedgerEntry
             {
                 Kind = LedgerKinds.Expense, Date = new DateOnly(2026, 9, 30), Description = "Quảng cáo Etsy tháng 09/2026",
                 CategoryId = AdsCategory, OrderCode = "ADS-2026-09", SalesChannel = SalesValues.ChannelEtsy, Payee = "Etsy",
-                Source = EntrySources.Etsy, Details = new LedgerDetails { ReferenceCode = "ADS-2026-09" },
+                Source = EntrySources.Etsy, Details = new LedgerDetails { ReferenceCode = "ADS-2026-09", EtsyAmount = 8m },
             };
             entry.SetAmounts(8m, 0);
             _unitOfWork.WithEntry(entry);
@@ -78,10 +84,11 @@ namespace Fin.Tests.Unit.Services
 
             Assert.Equal(("ADS-2026-09", SalesValues.ChannelEtsy, EntrySources.Etsy), (entry.OrderCode, entry.SalesChannel, entry.Source));
             _etsy.LedgerEntries.Add(new EtsyLedgerEntry(1, new DateOnly(2026, 9, 3), "PROLIST", "Etsy Ads", -8m, "USD"));
-            var importer = new EtsyAdsImporter(_unitOfWork, _etsy, new AuditTrail(_unitOfWork), EtsyOptionsFor.Shop(), Today);
-            var again = await importer.ImportAsync([new DateOnly(2026, 9, 1)], "test", CancellationToken.None);
-            Assert.Equal(0, again.Imported);
+            var again = await Importer().SyncAsync(new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 1), "test", CancellationToken.None);
+            Assert.Equal((0, 0), (again.Created, again.Updated));
             Assert.Single(_unitOfWork.Entries, e => e.OrderCode == "ADS-2026-09");
+            // The corrected amount stays, although Etsy says 8.
+            Assert.Equal(9.5m, entry.Amount);
         }
 
         [Fact]
@@ -136,6 +143,8 @@ namespace Fin.Tests.Unit.Services
                 .AddScoped<AuditTrail>()
                 .AddScoped<EtsyOrderImporter>()
                 .AddScoped<EtsyAdsImporter>()
+                .AddScoped<EtsyListingStats>()
+                .AddSingleton(PeriodLockOff())
                 .BuildServiceProvider();
             var store = savedState ?? new MemoryStateStore();
             var runner = new EtsyAutoSyncRunner(services.GetRequiredService<IServiceScopeFactory>(), _etsy, store,
@@ -154,7 +163,22 @@ namespace Fin.Tests.Unit.Services
         }
 
         [Fact]
-        public async Task Once_a_month_is_over_its_ad_spend_is_written_even_with_order_sync_off()
+        public async Task Editing_by_hand_survives_the_next_automatic_update()
+        {
+            var entry = SeedAdsEntry();
+            await UpdateAsync(entry, new LedgerEntryRequest { Date = "2026-09-30", Description = entry.Description, CategoryId = AdsCategory, Amount = 9.5m });
+            // The form does not send the remembered Etsy amount; it is kept anyway.
+            Assert.Equal(8m, entry.Details.EtsyAmount);
+
+            _etsy.LedgerEntries.Add(new EtsyLedgerEntry(1, new DateOnly(2026, 9, 3), "PROLIST", "Etsy Ads", -12m, "USD"));
+            var (runner, _) = Runner();
+            await runner.RunAdsAsync(CancellationToken.None);
+
+            Assert.Equal(9.5m, entry.Amount);
+        }
+
+        [Fact]
+        public async Task The_hourly_run_writes_and_updates_ad_spend_even_with_order_sync_off()
         {
             SeedEtsy();
             var (runner, store) = Runner();
@@ -163,35 +187,29 @@ namespace Fin.Tests.Unit.Services
             Assert.True(runner.IsAdsDue());
             await runner.RunAdsAsync(CancellationToken.None);
 
-            Assert.Equal((1, "2026-09", (string?)null), (store.State.LastAdsImported, store.State.AdsMonthDone, store.State.AdsError));
-            var ads = Assert.Single(_unitOfWork.Entries);
-            Assert.Equal(("ADS-2026-09", 7m, new DateOnly(2026, 9, 30)), (ads.OrderCode, ads.Amount, ads.Date));
-            // Older months (August) and the running month (October) are left alone.
-            Assert.Equal((new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 30)), Assert.Single(_etsy.LedgerRanges));
-            Assert.Equal("2026-09", runner.Status().AdsMonthDone);
+            // August, September and the running October, each its own expense.
+            Assert.Equal((3, (string?)null), (store.State.LastAdsImported, store.State.AdsError));
+            Assert.Equal([4m, 7m, 2m], new[] { "ADS-2026-08", "ADS-2026-09", "ADS-2026-10" }.Select(c => _unitOfWork.Entries.Single(e => e.OrderCode == c).Amount));
+            // Twelve months back to the running one.
+            Assert.Equal((new DateOnly(2025, 11, 1), new DateOnly(2026, 10, 31)), Assert.Single(_etsy.LedgerRanges));
+            Assert.Equal(3, runner.Status().LastAdsImported);
         }
 
         [Fact]
-        public async Task A_written_month_is_not_tried_again()
+        public async Task The_next_hour_brings_new_charges_of_the_running_month()
         {
             SeedEtsy();
-            var (runner, _) = Runner();
-
-            await runner.RunAdsAsync(CancellationToken.None);
-
-            Assert.False(runner.IsAdsDue());
-        }
-
-        [Fact]
-        public async Task A_month_without_ads_is_still_marked_done()
-        {
             var (runner, store) = Runner();
+            await runner.RunAdsAsync(CancellationToken.None);
+            Assert.False(runner.IsAdsDue());
 
+            _etsy.LedgerEntries.Add(new EtsyLedgerEntry(4, new DateOnly(2026, 10, 20), "PROLIST", "Etsy Ads", -5m, "USD"));
+            store.State.AdsLastRunAt = store.State.AdsLastRunAt!.Value.AddHours(-1);
+            Assert.True(runner.IsAdsDue());
             await runner.RunAdsAsync(CancellationToken.None);
 
-            Assert.Equal((0, "2026-09"), (store.State.LastAdsImported, store.State.AdsMonthDone));
-            Assert.Empty(_unitOfWork.Entries);
-            Assert.False(runner.IsAdsDue());
+            Assert.Equal(1, store.State.LastAdsImported);
+            Assert.Equal(7m, _unitOfWork.Entries.Single(e => e.OrderCode == "ADS-2026-10").Amount);
         }
 
         [Fact]
@@ -203,18 +221,18 @@ namespace Fin.Tests.Unit.Services
 
             await runner.RunAdsAsync(CancellationToken.None);
 
-            Assert.Null(store.State.AdsMonthDone);
             Assert.Contains("Etsy Payments", store.State.AdsError);
+            Assert.Empty(_unitOfWork.Entries);
             Assert.False(runner.IsAdsDue());
             store.State.AdsLastRunAt = store.State.AdsLastRunAt!.Value.AddHours(-1);
             Assert.True(runner.IsAdsDue());
         }
 
         [Fact]
-        public async Task After_a_restart_a_failed_month_is_tried_again_at_once()
+        public async Task After_a_restart_the_ad_spend_is_checked_at_once()
         {
             SeedEtsy();
-            // Saved by the previous run, five minutes ago, before the migration had created the table.
+            // Saved by the previous run, five minutes ago.
             var saved = new MemoryStateStore();
             saved.State.AdsError = "Table 'finance.fx_daily' doesn't exist";
             saved.State.AdsLastRunAt = new DateTime(2026, 10, 24, 9, 55, 0);
@@ -224,7 +242,8 @@ namespace Fin.Tests.Unit.Services
 
             Assert.True(runner.IsAdsDue());
             await runner.RunAdsAsync(CancellationToken.None);
-            Assert.Equal(("2026-09", (string?)null), (store.State.AdsMonthDone, store.State.AdsError));
+            Assert.Null(store.State.AdsError);
+            Assert.Equal(3, _unitOfWork.Entries.Count);
         }
 
         [Fact]

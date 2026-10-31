@@ -21,6 +21,8 @@ namespace Fin.Tests.Unit.Support
 
         public IAttachmentRepository AttachmentRepository => throw new NotSupportedException();
 
+        public IEtsyListingStatRepository EtsyListingStatRepository => throw new NotSupportedException();
+
         public IAuditLogRepository AuditLogRepository => throw new NotSupportedException();
 
         public IFxMonthlyRateRepository FxMonthlyRateRepository => throw new NotSupportedException();
