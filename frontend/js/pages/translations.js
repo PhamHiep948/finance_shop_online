@@ -37,6 +37,24 @@ function trParse(text, ex) {
 /** Các số liệu ví dụ chưa có trong bản dịch `de` (dạng lưu). */
 const trMissing = (de, ex) => ex.filter((_, i) => !de.includes(`{${i}}`));
 
+/**
+ * Chữ là dữ liệu (tên sản phẩm, nội dung khoản thu / chi, bên nhận, ghi chú, tên sản phẩm Etsy), dạng khóa như lúc gom
+ * ("Lily {0} cm"). Trước đây các chữ này lọt vào danh sách dịch; trang Bản dịch chỉ giữ chữ của giao diện.
+ */
+function trDataKeys(records, titles = []) {
+  const keys = new Set();
+  const add = (v) => {
+    const norm = i18nNormalize(v);
+    if (norm) keys.add(i18nTemplate(norm).key);
+  };
+  records.forEach((r) => [r.description, r.recipient, r.payee, r.note].forEach(add));
+  titles.forEach(add);
+  return keys;
+}
+
+/** Các chữ chưa dịch thuộc `keys` (đã dịch / bỏ qua thì để nguyên: admin đã chủ động xử lý). */
+const trDataRows = (rows, keys) => rows.filter((x) => !x.de && !x.ignored && keys.has(i18nNormalize(x.source)));
+
 const TranslationsPage = {
   rows: null, // [{ source, de, ignored }] đã lưu; null = đang tải
   draft: {}, // source → { de, ignored } đang sửa
@@ -58,11 +76,28 @@ const TranslationsPage = {
 
   async load() {
     try {
-      this.setRows(await api("/translations"));
+      this.setRows(await this.withoutData(await api("/translations")));
     } catch (e) {
       this.error = e.message;
     }
     if (current.page === this && this.root) this.render(this.root);
+  },
+
+  /** Xóa khỏi từ điển các chữ là tên sản phẩm / dữ liệu đã lỡ gom; trả về danh sách còn lại. */
+  async withoutData(rows) {
+    if (store.loading) await new Promise((done) => onStoreChange(() => done()));
+    // Tên sản phẩm Etsy (trang Sản phẩm & Quảng cáo); chưa kết nối Etsy thì bỏ qua.
+    const titles = await etsyListings().then((list) => list.map((l) => l.title), () => []);
+    const junk = trDataRows(rows, trDataKeys([...store.incomes, ...store.expenses], titles));
+    if (!junk.length) return rows;
+    try {
+      await api("/translations/delete", { method: "POST", body: { sources: junk.map((x) => x.source) } });
+    } catch {
+      return rows;
+    }
+    toast(`Đã bỏ ${junk.length} tên sản phẩm / dữ liệu khỏi danh sách dịch`);
+    const gone = new Set(junk.map((x) => x.source));
+    return rows.filter((x) => !gone.has(x.source));
   },
 
   setRows(rows) {

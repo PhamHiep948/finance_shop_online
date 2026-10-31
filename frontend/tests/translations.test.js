@@ -94,3 +94,19 @@ test("không có chữ nào thì báo trống, không có thanh phân trang", ()
   assert.match(html, /Không có chữ nào/);
   assert.doesNotMatch(html, /class="pager"/);
 });
+
+test("tên sản phẩm / dữ liệu đã lỡ gom thì bị bỏ khỏi danh sách dịch; chữ đã dịch hoặc bỏ qua giữ nguyên", () => {
+  const { trDataKeys, trDataRows } = loadScripts(["js/format.js", "js/store.js", "js/i18n.js", "js/pages/translations.js"], { api: async () => [] })(["trDataKeys", "trDataRows"]);
+  const keys = trDataKeys(
+    [{ description: "Lily  Flower 30 cm", recipient: "DHL Express" }, { description: "Tiền xưởng · Rose", note: "" }],
+    ["Handmade Rose Necklace"]);
+  const rows = [
+    { source: "Lily Flower {0} cm", de: "", ignored: false },
+    { source: "DHL Express", de: "", ignored: false },
+    { source: "Handmade Rose Necklace", de: "", ignored: false },
+    { source: "Tiền xưởng · Rose", de: "Werkstatt · Rose", ignored: false },
+    { source: "Rose", de: "", ignored: true },
+    { source: "Tổng thu", de: "", ignored: false },
+  ];
+  assert.deepEqual(trDataRows(rows, keys).map((x) => x.source), ["Lily Flower {0} cm", "DHL Express", "Handmade Rose Necklace"]);
+});
