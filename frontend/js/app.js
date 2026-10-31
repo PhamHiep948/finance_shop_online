@@ -332,6 +332,25 @@ async function pollEtsyAuto() {
   if (changed) emitStore();
 }
 
+/** Nút "Lên đầu trang" ở góc dưới phải, dùng chung mọi trang; chỉ hiện khi đã cuộn xuống quá một màn hình nhỏ. */
+function initBackToTop() {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "back-to-top";
+  btn.title = "Lên đầu trang";
+  btn.setAttribute("aria-label", "Lên đầu trang");
+  btn.innerHTML = icon("chevron-up", 20);
+  btn.addEventListener("click", () => {
+    const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({ top: 0, behavior: smooth ? "smooth" : "auto" });
+  });
+  // Gắn ngoài #root để không mất khi khung trang vẽ lại.
+  document.body.appendChild(btn);
+  const update = () => btn.classList.toggle("is-visible", window.scrollY > 400);
+  window.addEventListener("scroll", update, { passive: true });
+  update();
+}
+
 // ---- Khởi động
 renderShell();
 applyTheme();
@@ -339,6 +358,7 @@ renderCcyToggle();
 renderLangToggle();
 i18nStart();
 initColumnResize();
+initBackToTop();
 onStoreChange(renderPage);
 onStoreChange(renderCcyToggle);
 onStoreChange(renderLangToggle);

@@ -1,6 +1,13 @@
 // Trang danh sách Khoản thu (#/incomes) và Khoản chi (#/expenses),
 // gồm modal chi tiết, form thêm/sửa và hộp chọn cột.
 const PAGE_SIZE = 10;
+const MAX_PAGE_SIZE = 500;
+
+/** Số dòng mỗi trang người dùng tự nhập, nhớ riêng cho khoản thu / khoản chi; chưa nhập thì 10. */
+function loadPageSize(kind) {
+  const n = Number(localStorage.getItem("fm_page_size_" + kind));
+  return Number.isInteger(n) && n >= 1 ? Math.min(n, MAX_PAGE_SIZE) : PAGE_SIZE;
+}
 
 function kpiCardHtml({ label, value, delta }) {
   const deltaCls = String(delta || "").startsWith("-") ? "down" : "up";
@@ -737,9 +744,10 @@ function createRecordsPage(kind) {
   /** Bảng + phân trang (vẽ lại riêng khi gõ tìm kiếm để ô tìm kiếm không mất focus). */
   function tableHtml() {
     const rowsAll = filtered();
-    const pages = Math.max(1, Math.ceil(rowsAll.length / PAGE_SIZE));
+    const size = s.pageSize;
+    const pages = Math.max(1, Math.ceil(rowsAll.length / size));
     const p = Math.min(s.page, pages);
-    const rows = rowsAll.slice((p - 1) * PAGE_SIZE, p * PAGE_SIZE);
+    const rows = rowsAll.slice((p - 1) * size, p * size);
     const visibleOrder = s.colOrder.filter((id) => s.cols[id]);
 
     const body = rows.length
@@ -757,7 +765,12 @@ function createRecordsPage(kind) {
     const pageNums = Array.from({ length: pages }, (_, i) => i + 1).filter((i) => i === 1 || i === pages || Math.abs(i - p) <= 2);
     const pager = rowsAll.length
       ? `<div class="pager">
-          <span class="muted">Hiển thị ${(p - 1) * PAGE_SIZE + 1} – ${Math.min(p * PAGE_SIZE, rowsAll.length)} trên tổng số ${rowsAll.length} bản ghi</span>
+          <div class="pager-info">
+            <span class="muted">Hiển thị ${(p - 1) * size + 1} – ${Math.min(p * size, rowsAll.length)} trên tổng số ${rowsAll.length} bản ghi</span>
+            <label class="pager-size muted">Số dòng / trang
+              <input type="number" min="1" max="${MAX_PAGE_SIZE}" step="1" value="${size}" data-page-size title="Gõ số rồi Enter (1 – ${MAX_PAGE_SIZE})" />
+            </label>
+          </div>
           <div class="pager-pages">
             <button type="button" class="btn ghost pager-btn" data-action="page" data-page="${p - 1}"${p <= 1 ? " disabled" : ""}>Trước</button>
             ${pageNums.map((i) => `<button type="button" class="btn ${i === p ? "primary" : "ghost"} pager-btn" data-action="page" data-page="${i}">${i}</button>`).join("")}
@@ -1549,6 +1562,15 @@ function createRecordsPage(kind) {
     if (t.classList.contains("date-text")) return; // ô gõ ngày: chỉ áp dụng khi gõ xong (xem app.js)
     if (t.dataset.action === "ccy") { setCcy(t.value); return; }
     if (t.dataset.col) { s.draftCols = { ...s.draftCols, [t.dataset.col]: t.checked }; return; }
+    // Số dòng / trang: áp dụng khi gõ xong (Enter hoặc rời ô), số lẻ / ngoài khoảng thì đưa về 1 – MAX_PAGE_SIZE.
+    if (t.dataset.pageSize !== undefined) {
+      const n = Math.round(Number(t.value));
+      s.pageSize = Number.isFinite(n) && n >= 1 ? Math.min(n, MAX_PAGE_SIZE) : PAGE_SIZE;
+      localStorage.setItem("fm_page_size_" + kind, String(s.pageSize));
+      s.page = 1;
+      refreshTable();
+      return;
+    }
     if (t.dataset.etsyPick !== undefined) {
       if (t.checked) s.etsy.selected.add(t.dataset.etsyPick);
       else s.etsy.selected.delete(t.dataset.etsyPick);
@@ -1799,7 +1821,7 @@ function createRecordsPage(kind) {
   return {
     init() {
       s = {
-        q: "", cat: "", src: "", region: "", origin: "", from: "", to: "", page: 1,
+        q: "", cat: "", src: "", region: "", origin: "", from: "", to: "", page: 1, pageSize: loadPageSize(kind),
         showFilters: false, cols: loadCols(kind), colOrder: loadColOrder(kind),
         colsOpen: false, draftCols: {}, draftOrder: [], viewId: null, costDraft: null,
         att: null, pendingFiles: [], formKey: "", catsOpen: false, catsMode: "category", catEditId: null, viewAnim: false, formAnim: false,
