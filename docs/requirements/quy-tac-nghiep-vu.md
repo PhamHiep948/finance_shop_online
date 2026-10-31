@@ -6,7 +6,7 @@ Mỗi quy tắc ghi kèm nơi cài đặt trong code để tra cứu nhanh.
 
 | ID | Quy tắc | Cài đặt |
 |---|---|---|
-| BR-01 | Mọi số tiền lưu bằng **USD**, 2 chữ số thập phân, làm tròn `AwayFromZero` | `LedgerEntry.AfterTax / BeforeTax` |
+| BR-01 | Số tiền lưu theo **loại tiền lúc nhập** (USD hoặc EUR, cột `currency_code`), 2 chữ số thập phân, làm tròn `AwayFromZero`; quy đổi chỉ khi hiển thị / cộng báo cáo | `LedgerEntry.AfterTax / BeforeTax` |
 | BR-02 | Khoản nhập tay: sau thuế = trước thuế × (1 + % thuế) | `LedgerEntry.SetAmounts` |
 | BR-03 | Đơn Etsy **trong EU** (27 nước): tiền nhận về (tạm tính + ship) là tiền **sau thuế**; trước thuế = nhận về ÷ (1 + `EuVatPercent`, mặc định 19%) | `EtsyOrderMapper` |
 | BR-04 | Đơn Etsy **ngoài EU**: trước thuế = tạm tính + ship; % thuế = thuế Etsy thu ÷ trước thuế | `EtsyOrderMapper` |

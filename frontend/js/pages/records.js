@@ -79,23 +79,64 @@ function refreshCostSplit(form) {
   const split = splitPaid(form.elements.costAmount.value, form.elements.costTax.value);
   form.elements.costBefore.value = split.before;
   form.elements.costTaxAmount.value = split.tax;
+  refreshCostSummary(form, split);
+}
+
+/** Panel chi tiết: các dòng tóm tắt và lợi nhuận phía trên đổi ngay theo số đang gõ, chưa cần bấm Lưu. */
+function refreshCostSummary(form, split) {
+  const section = form.closest(".dr-section");
+  const incomeRow = section?.querySelector("[data-income-before]");
+  if (!incomeRow) return;
+  const { ccy } = store;
+  const before = Number(split.before) || 0;
+  const tax = Number(split.tax) || 0;
+  const set = (key, text) => { const el = section.querySelector(`[data-cost-live="${key}"]`); if (el) el.textContent = text; };
+  set("before", fmtCcy(before, ccy));
+  set("tax", fmtCcy(tax, ccy));
+  set("after", fmtCcy(round2(before + tax), ccy));
+  set("pct", pctLabel(Number(form.elements.costTax.value) || 0));
+  const profit = round2(Number(incomeRow.dataset.incomeBefore) - before);
+  const el = section.querySelector('[data-cost-live="profit"]');
+  if (el) {
+    el.textContent = fmtCcy(profit, ccy);
+    el.className = profit < 0 ? "minus" : "plus";
+  }
 }
 
 /** Các ô người dùng gõ được trong form tiền xưởng / tiền ship (các ô còn lại tự tính). */
 const COST_DRAFT_FIELDS = ["costAmount", "costTax", "costPayee", "costScope", "costInvoiceId", "costDate"];
 
-/** Đọc các ô tiền xưởng / tiền ship từ form; null nếu form không có các ô này. */
+/** Đọc các ô tiền xưởng / tiền ship từ form (số tiền theo loại tiền đang gõ `ccy`); null nếu form không có các ô này. */
 function costInputOf(form, ccy) {
   if (!form.elements.costAmount) return null;
   const date = form.elements.costDate.value;
   return {
-    amount: fromDisplayNum(form.elements.costAmount.value, ccy, 0, date),
+    amount: typedMoney(form.elements.costAmount.value) ?? 0,
+    currencyCode: ccy,
     taxPercent: Number(form.elements.costTax.value || 0),
     invoiceId: form.elements.costInvoiceId.value.trim(),
     payee: form.elements.costPayee.value.trim(),
     originScope: form.elements.costScope.value,
     date,
   };
+}
+
+/**
+ * Số tiền xưởng / ship không đổi (chỉ sửa bên nhận, ngày…) mà đang xem bằng loại tiền khác loại đã lưu:
+ * giữ số và loại tiền đã lưu, không lưu số quy đổi.
+ */
+function keepCostMoney(linked, cost) {
+  if (!linked || !cost || cost.currencyCode === linked.currency) return cost;
+  const shown = toDisplay(afterTaxOf(linked), cost.currencyCode, linked.expenseDate);
+  return sameMoney(cost.amount, shown) ? { ...cost, amount: linked.orig.amountAfterTax, currencyCode: linked.currency } : cost;
+}
+
+/** Dòng "Lưu bằng" trong panel chi tiết: loại tiền lúc nhập và số gốc khi đang xem bằng loại tiền khác. */
+function storedCurrencyHtml(rec) {
+  const total = rec.orig?.amountAfterTax ?? afterTaxOf(rec);
+  return rec.currency === store.ccy
+    ? `<b>${esc(rec.currency)}</b>`
+    : `<b>${esc(rec.currency)}</b> <span class="muted">· số gốc ${esc(fmtCcy(total, rec.currency))} (đang xem quy đổi sang ${esc(store.ccy)})</span>`;
 }
 
 /** Danh sách gợi ý cho ô "Nhóm sản phẩm" (gõ tên mới được, lưu sẽ tự thêm nhóm). */
@@ -332,6 +373,22 @@ function attachmentsHtml(att, locked) {
   }).join("")}</div>`;
 }
 
+/**
+ * Chứng từ của khoản thu mà khoản chi (tiền xưởng / tiền ship) gắn vào: chỉ xem, sửa ở khoản thu.
+ * `att.linked` = { incomeId, items } do loadAttachments tải kèm.
+ */
+function linkedAttachmentsHtml(rec, att) {
+  const linked = att?.linked;
+  if (!rec?.linkedIncomeId || !linked || String(linked.incomeId) !== String(rec.linkedIncomeId)) return "";
+  if (!linked.items.length && !linked.error) return "";
+  return `
+    <div class="dr-section-head attach-linked-head">
+      <h4>${icon("link", 13)} Chứng từ của khoản thu (${linked.items.length})</h4>
+      <a class="btn ghost sm" href="#/incomes?view=${esc(rec.linkedIncomeId)}">${icon("external-link", 13)} Mở khoản thu</a>
+    </div>
+    ${attachmentsHtml(linked, true)}`;
+}
+
 // ---------------------------------------------------------------- Panel chi tiết
 
 /** `nav` = { index, total } để hiện nút Trước / Sau trong danh sách đang lọc. */
@@ -402,21 +459,25 @@ function recordDetailHtml(kind, rec, att, nav, animate) {
         drRow("sticky-note", "Ghi chú", rec.note ? `<span translate="no">${esc(rec.note)}</span>` : dash, "is-multiline", ed("note")),
       ];
 
-  const money2 = (v) => esc(usd(v));
+  // Số tiền theo loại tiền đang chọn (như ô sửa); dòng tổng kèm số quy sang loại tiền còn lại.
+  const other = store.ccy === "EUR" ? "USD" : "EUR";
+  const money2 = (v) => esc(money(v, store.ccy, date));
   const finance = isIncome
     ? [
+        drRow("euro", "Lưu bằng", storedCurrencyHtml(rec)),
         drRow("circle-dollar-sign", "Giá bán", item ? `${money2(item.value)}${autoTag(item)}` : dash, "", ed("itemTotal")),
         drRow("tags", "Giảm giá", disc ? `<span class="minus">− ${money2(disc)}</span>${rec.discountCode ? ` <span class="muted" translate="no">(${esc(rec.discountCode)})</span>` : ""}${autoTag(discInfo)}` : dash, "", ed("discountAmount")),
         drRow("circle-dollar-sign", "Thành tiền", subtotal != null ? `${money2(subtotal)} <span class="muted">(giá bán − giảm giá)</span>` : dash),
         drRow("truck", "Vận chuyển", ship ? money2(ship) : dash, "", ed("shippingAmount")),
         drRow("circle-dollar-sign", "Trước thuế", money2(amount), "", ed("amount", true)),
         drRow("percent", `Thuế (${pctLabel(rec.taxPercent)})`, money2(taxAmt), "", ed("taxPercent")),
-        drRow("receipt", "Tổng thu", `<b class="plus">${money2(total)}</b> <span class="muted">≈ ${esc(money(total, "EUR", date))}</span>`, "is-total income"),
+        drRow("receipt", "Tổng thu", `<b class="plus">${money2(total)}</b> <span class="muted">≈ ${esc(money(total, other, date))}</span>`, "is-total income"),
       ]
     : [
+        drRow("euro", "Lưu bằng", storedCurrencyHtml(rec)),
         drRow("circle-dollar-sign", "Trước thuế", money2(amount), "", ed("amount", true)),
         drRow("percent", `Thuế (${pctLabel(rec.taxPercent)})`, money2(taxAmt), "", ed("taxPercent")),
-        drRow("receipt", "Tổng thanh toán", `<b class="minus">${money2(total)}</b> <span class="muted">≈ ${esc(money(total, "EUR", date))}</span>`, "is-total expense"),
+        drRow("receipt", "Tổng thanh toán", `<b class="minus">${money2(total)}</b> <span class="muted">≈ ${esc(money(total, other, date))}</span>`, "is-total expense"),
       ];
 
   return `
@@ -476,6 +537,7 @@ function recordDetailHtml(kind, rec, att, nav, animate) {
               </label>`}
           </div>
           <div data-slot="attachments">${attachmentsHtml(att, locked)}</div>
+          ${linkedAttachmentsHtml(rec, att)}
         </section>
       </div>
     </aside>`;
@@ -500,12 +562,12 @@ function costSectionHtml(rec) {
         ${linked ? `<a class="btn ghost sm" href="#/expenses?view=${linked.id}">${icon("external-link", 13)} Xem khoản chi</a>` : ""}
       </div>
       ${linked ? `<div class="dr-rows">
-        ${drRow("circle-dollar-sign", `${kindLabel} trước thuế`, esc(fmtCcy(before, store.ccy)))}
-        ${drRow("percent", `Thuế (${pctLabel(linked.taxPercent)})`, esc(fmtCcy(round2(after - before), store.ccy)))}
-        ${drRow("receipt", `${kindLabel} sau thuế`, `<b class="minus">${esc(fmtCcy(after, store.ccy))}</b>`)}
+        ${drRow("circle-dollar-sign", `${kindLabel} trước thuế`, `<span data-cost-live="before">${esc(fmtCcy(before, store.ccy))}</span>`)}
+        ${drRow("percent", `Thuế (<span data-cost-live="pct">${pctLabel(linked.taxPercent)}</span>)`, `<span data-cost-live="tax">${esc(fmtCcy(round2(after - before), store.ccy))}</span>`)}
+        ${drRow("receipt", `${kindLabel} sau thuế`, `<b class="minus" data-cost-live="after">${esc(fmtCcy(after, store.ccy))}</b>`)}
       </div>` : ""}
-      <div class="dr-rows">
-        ${drRow("trending-up", "Lợi nhuận", `<b class="${profit < 0 ? "minus" : "plus"}">${m(profit)}</b>
+      <div class="dr-rows" data-income-before="${esc(toDisplay(rec.amount, store.ccy, date))}">
+        ${drRow("trending-up", "Lợi nhuận", `<b class="${profit < 0 ? "minus" : "plus"}" data-cost-live="profit">${m(profit)}</b>
           <span class="muted">= trước thuế − ${kindLabel.toLowerCase()} trước thuế</span>`, "is-total income")}
       </div>
       <form class="cost-form" data-form="cost">
@@ -586,7 +648,7 @@ function createRecordsPage(kind) {
 
   function headerCell(id) {
     const numeric = ["qty", "amount", "taxPercent", "afterTax", "item", "discount", "subtotal", "ship", "tax", "fx", "costBefore", "costTax", "cost", "profit"].includes(id);
-    return `<th${numeric ? ' class="amount"' : ""}>${esc(defsById[id]?.label)}</th>`;
+    return `<th data-col="${id}"${numeric ? ' class="amount"' : ""}>${esc(defsById[id]?.label)}</th>`;
   }
 
   function bodyCell(id, r) {
@@ -841,9 +903,9 @@ function createRecordsPage(kind) {
                   <td><input type="checkbox" data-etsy-pick="${esc(o.receiptId)}"${e.selected.has(o.receiptId) ? " checked" : ""}${o.imported ? " disabled" : ""} /></td>
                   <td>${esc(dmy(o.date))}</td>
                   <td>${orderCodeHtml(o.receiptId, true)}</td>
-                  <td><span translate="no">${esc(o.description)}</span>${o.imported ? ' <span class="badge ok">Đã nhập</span>' : ""}${o.note ? `<div class="muted etsy-note">${esc(o.note)}</div>` : ""}</td>
+                  <td><span translate="no">${esc(o.description)}</span>${o.imported ? ' <span class="badge ok">Đã nhập</span>' : ""}${o.note ? `<div class="muted etsy-note" translate="no">${esc(o.note)}</div>` : ""}</td>
                   <td class="amount">${o.quantity}</td>
-                  <td>${esc(o.country)} · <span class="muted">${o.saleRegion === "IN_EU" ? "EU" : "Ngoài EU"}</span></td>
+                  <td><span translate="no">${esc(o.country)}</span> · <span class="muted">${o.saleRegion === "IN_EU" ? "EU" : "Ngoài EU"}</span></td>
                   <td class="amount">${esc(usd(o.amount))}</td>
                   <td class="amount muted">${esc(usd(Number(o.amountAfterTax) - Number(o.amount)))}<div class="etsy-note">${esc(pctLabel(o.taxPercent))}</div></td>
                   <td class="amount"><b>${esc(usd(o.amountAfterTax))}</b></td>
@@ -1279,11 +1341,19 @@ function createRecordsPage(kind) {
   }
 
   async function loadAttachments(id) {
+    // Khoản chi gắn với khoản thu: tải kèm chứng từ của khoản thu đó để xem ngay tại đây.
+    const incomeId = isIncome ? null : list().find((x) => x.id === id)?.linkedIncomeId;
+    const linkedJob = incomeId == null ? null : listAttachments("income", incomeId).then(
+      (items) => ({ incomeId, items }), (e) => ({ incomeId, items: [], error: e.message }));
     try {
       const items = await listAttachments(kind, id);
       if (s.viewId === id) s.att = { id, items };
     } catch (e) {
       if (s.viewId === id) s.att = { id, items: [], error: e.message };
+    }
+    if (linkedJob) {
+      const linked = await linkedJob;
+      if (s.viewId === id) s.att = { ...s.att, linked };
     }
     refreshDetail();
   }
@@ -1676,7 +1746,8 @@ function createRecordsPage(kind) {
       const linked = costOf(r, store.expenses).items[0];
       const date = linked?.expenseDate || r[dateKey];
       const ok = await saveCost(r.id, {
-        amount: fromDisplayNum(raw, ccy, 0, date),
+        amount: typedMoney(raw) ?? 0,
+        currencyCode: ccy,
         taxPercent: linked ? Number(linked.taxPercent) || 0 : r.saleRegion === "IN_EU" ? 19 : 0,
         invoiceId: linked?.invoiceId || "",
         payee: linked?.recipient || "",
@@ -1687,14 +1758,16 @@ function createRecordsPage(kind) {
       return;
     }
     let value = raw;
-    if (MONEY_FIELDS.includes(field)) value = field === "amount" ? fromDisplayNum(raw, ccy, 0, r[dateKey]) : fromDisplay(raw, ccy, r[dateKey]);
+    // Sửa một số tiền: lưu cả khoản theo loại tiền đang gõ (các số khác như đang hiện); sửa trường khác: giữ số gốc.
+    const money = MONEY_FIELDS.includes(field) ? shownMoney(r, ccy, r[dateKey]) : origMoney(r);
+    if (MONEY_FIELDS.includes(field)) value = field === "amount" ? typedMoney(raw) ?? 0 : typedMoney(raw);
     else if (field === "taxPercent") value = Number(raw || 0);
     else if (field === "productQty") value = raw ? Math.max(1, Math.round(Number(raw))) : null;
     else if (field === "categoryId") {
       value = isIncome ? await resolveProductGroup(raw) : Number(raw);
       if (value === undefined) { cancelEdit(); return; }
     }
-    const next = { ...r, [field === "date" ? dateKey : field]: value };
+    const next = { ...r, ...money, [field === "date" ? dateKey : field]: value };
     next.amountAfterTax = afterTax(next.amount, next.taxPercent);
     if (!(await saveRecord(kind, next, r.id))) cancelEdit();
   }
@@ -1712,8 +1785,9 @@ function createRecordsPage(kind) {
   /** Lưu tiền xưởng / tiền ship của khoản thu `incomeId`. Trả về true nếu thành công. */
   async function saveCost(incomeId, cost) {
     if (!incomeId || !cost) return false;
+    const income = store.incomes.find((x) => x.id === incomeId);
     try {
-      await setIncomeCost(incomeId, cost);
+      await setIncomeCost(incomeId, keepCostMoney(income && costOf(income, store.expenses).items[0], cost));
       toast(cost.amount > 0 ? "Đã lưu tiền xưởng / tiền ship (đã thêm vào Khoản chi)" : "Đã bỏ tiền xưởng / tiền ship của khoản thu");
       return true;
     } catch (err) {

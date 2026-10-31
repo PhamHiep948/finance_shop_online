@@ -13,7 +13,8 @@ const TrashPage = {
     s.loading = true;
     try {
       const res = await listTrash();
-      s.items = res.items.map((r) => ({ ...r, amount: Number(r.amount), amountAfterTax: Number(r.amountAfterTax) }));
+      // Số tiền lưu theo loại tiền lúc nhập: quy sang USD như các trang khác.
+      s.items = res.items.map((r) => ({ ...r, amount: usdOf(r.amount, r.currencyCode, r.date), amountAfterTax: usdOf(r.amountAfterTax, r.currencyCode, r.date) }));
       s.retentionDays = res.retentionDays;
       s.error = "";
       const ids = new Set(s.items.map((r) => r.id));
@@ -83,7 +84,7 @@ const TrashPage = {
           </td>
           <td>${esc(catName(isIncome ? INCOME_CATEGORIES : EXPENSE_CATEGORIES, r.categoryId))}</td>
           <td><span class="cell-date">${esc(dmy(r.date))}</span></td>
-          <td class="amount"><strong class="${isIncome ? "plus" : "minus"}">${esc(money(r.amountAfterTax, store.ccy))}</strong></td>
+          <td class="amount"><strong class="${isIncome ? "plus" : "minus"}">${esc(money(r.amountAfterTax, store.ccy, r.date))}</strong></td>
           <td><span class="cell-date">${deletedAt.toLocaleDateString("vi-VN")} ${deletedAt.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}</span></td>
           <td><span class="trash-left${left <= 3 ? " soon" : ""}">${left === 0 ? "Hôm nay" : `${left} ngày`}</span></td>
           <td>

@@ -158,6 +158,14 @@ function eurToUsdOn(iso) {
 const hasDailyRate = (iso) => Number(FX_DAILY[String(iso || "").slice(0, 10)]) > 0;
 /** Tháng của `iso` đã tự nhập tỷ giá chưa. */
 const hasMonthlyRate = (iso) => Number(FX_MONTHLY[String(iso || "").slice(0, 7)]) > 0;
+/** Loại tiền lưu của một khoản: "EUR" hoặc "USD" (khoản cũ / không ghi = USD). */
+const currencyOf = (code) => (String(code || "").toUpperCase() === "EUR" ? "EUR" : "USD");
+/** Số tiền `v` (loại tiền `currency`) quy sang USD theo tỷ giá ngày `iso`, không làm tròn. */
+function usdOf(v, currency, iso) {
+  if (v == null || v === "") return v;
+  const n = Number(v);
+  return currencyOf(currency) === "EUR" ? n * eurToUsdOn(iso) : n;
+}
 /** USD → tiền hiển thị. Có `iso` thì quy đổi theo tỷ giá của tháng đó (như Excel: USD ÷ tỷ giá tháng). */
 function toDisplay(n, ccy, iso) {
   const v = Number(n) || 0;

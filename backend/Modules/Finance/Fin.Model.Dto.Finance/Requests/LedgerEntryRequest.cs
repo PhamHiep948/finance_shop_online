@@ -8,6 +8,8 @@ namespace Fin.Model.Dto.Finance.Requests
         public decimal Amount { get; set; }
         public decimal TaxPercent { get; set; }
         public decimal AmountAfterTax { get; set; }
+        // Currency the amounts were typed in (USD / EUR); they are stored as typed, not converted. Empty = USD.
+        public string? CurrencyCode { get; set; }
         public string? OrderCode { get; set; }
         public string? SaleRegion { get; set; }
         public string? SalesChannel { get; set; }

@@ -13,7 +13,9 @@ namespace Fin.Service.Finance.Services
             entry.Date = DateOnly.ParseExact(request.Date, FinanceConstants.IsoDateFormat, CultureInfo.InvariantCulture);
             entry.Description = request.Description.Trim();
             entry.CategoryId = request.CategoryId;
-            entry.CurrencyCode = SalesValues.DefaultCurrency;
+            var currency = SalesValues.CurrencyOf(request.CurrencyCode);
+            var sameMoney = entry.Amount == request.Amount && entry.TaxPercent == request.TaxPercent && entry.CurrencyCode == currency;
+            entry.CurrencyCode = currency;
             entry.OrderCode = request.OrderCode;
             entry.SaleRegion = request.SaleRegion;
             entry.SalesChannel = request.SalesChannel;
@@ -36,7 +38,7 @@ namespace Fin.Service.Finance.Services
             };
             // Amount and tax unchanged (only other fields edited): keep the stored after-tax figure, which may be an
             // exact paid / received amount; recomputing it from the rounded pre-tax amount could shift it by a cent.
-            var keepAfterTax = entry.Amount == request.Amount && entry.TaxPercent == request.TaxPercent ? entry.AmountAfterTax : (decimal?)null;
+            var keepAfterTax = sameMoney ? entry.AmountAfterTax : (decimal?)null;
             entry.SetAmounts(request.Amount, request.TaxPercent, keepAfterTax);
         }
     }

@@ -24,4 +24,4 @@ Bộ tài liệu của ứng dụng quản lý thu chi cho shop bán hàng trên
 - **Backend:** ASP.NET Core 9, Clean Architecture theo module (dựa trên khung CMS_VSF), CQRS bằng MediatR + FluentValidation, EF Core 9 + Pomelo trên MySQL / MariaDB (XAMPP).
 - **Frontend:** HTML + CSS + JavaScript thuần trong `frontend/`, được chính API phục vụ tại `http://localhost:5000`.
 - **Dữ liệu:** một database `finance`, schema do migration EF quản lý; chương trình `Fin.Migration` là nơi duy nhất tạo / nâng cấp bảng và nạp dữ liệu mặc định.
-- **Tiền tệ:** mọi số tiền lưu bằng **USD**; giao diện đổi sang EUR theo **tỷ giá tự nhập từng tháng** (tháng chưa nhập tạm tính 1 EUR = 1 USD).
+- **Tiền tệ:** số tiền lưu đúng **loại tiền lúc nhập** (gõ EUR lưu EUR, gõ USD lưu USD); khi hiển thị / cộng báo cáo, khoản EUR quy sang USD (và ngược lại) theo **tỷ giá tự nhập của ngày / tháng** của khoản (tháng chưa nhập tạm tính 1 EUR = 1 USD). Đơn và phí quảng cáo nhập từ Etsy lưu USD.

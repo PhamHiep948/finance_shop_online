@@ -1,5 +1,6 @@
 using System.Globalization;
 using FluentValidation;
+using Fin.Domain.Finance.Constants;
 using Fin.Model.Dto.Finance.Requests;
 using Fin.Service.Finance.Constants;
 
@@ -21,6 +22,7 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Validators
             RuleFor(x => x.CategoryId).GreaterThan(0).When(x => x.CategoryId is not null).WithMessage(Message);
             RuleFor(x => x.Amount).GreaterThanOrEqualTo(0).WithMessage(Message);
             RuleFor(x => x.TaxPercent).InclusiveBetween(0, 100).WithMessage(Message);
+            RuleFor(x => x.CurrencyCode).Must(SalesValues.IsKnownCurrency).WithMessage("Loại tiền chỉ được là USD hoặc EUR.");
         }
     }
 }

@@ -131,9 +131,13 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
 
         private static string? TextOrNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
-        // The amount typed is what was paid (tax included); the pre-tax part is derived and the paid sum kept exact.
-        private static void SetPaidAmount(LedgerEntry expense, IncomeCostRequest payload) =>
+        // The amount typed is what was paid (tax included), kept in the currency it was typed in; the pre-tax part is
+        // derived and the paid sum kept exact.
+        private static void SetPaidAmount(LedgerEntry expense, IncomeCostRequest payload)
+        {
+            expense.CurrencyCode = SalesValues.CurrencyOf(payload.CurrencyCode);
             expense.SetAmounts(LedgerEntry.BeforeTax(payload.Amount, payload.TaxPercent), payload.TaxPercent, payload.Amount);
+        }
 
         private async Task<long> CostCategoryIdAsync(string name, CancellationToken cancellationToken)
         {

@@ -18,6 +18,7 @@ namespace Fin.Service.Finance.Services
             ("amount", x => x.Amount),
             ("taxPercent", x => x.TaxPercent),
             ("amountAfterTax", x => x.AmountAfterTax),
+            ("currencyCode", x => x.CurrencyCode),
             ("orderCode", x => x.OrderCode),
             ("saleRegion", x => x.SaleRegion),
             ("salesChannel", x => x.SalesChannel),
@@ -36,6 +37,9 @@ namespace Fin.Service.Finance.Services
             ("note", x => x.Note),
             ("invoiceId", x => x.InvoiceId),
         ];
+
+        private static readonly HashSet<string> MoneyFields =
+            ["amount", "amountAfterTax", "unitPrice", "itemTotal", "discountAmount", "subtotal", "shippingAmount", "taxAmount"];
 
         private readonly IFinanceUnitOfWork _unitOfWork;
 
@@ -69,6 +73,13 @@ namespace Fin.Service.Finance.Services
                 {
                     changes[field] = new AuditChange(from, to);
                 }
+            }
+            // Amounts are kept in the currency they were typed in: a changed amount always says which currency it is in,
+            // even when the currency itself did not change (the history page shows it as € / $, not as a change).
+            if (after is not null && Normalize(after.CurrencyCode) is { } currency
+                && !changes.ContainsKey("currencyCode") && changes.Keys.Any(MoneyFields.Contains))
+            {
+                changes["currencyCode"] = new AuditChange(currency, currency);
             }
             return changes;
         }

@@ -14,13 +14,14 @@ const AUDIT_FIELDS = {
   salesChannel: "Kênh bán", productQty: "Số lượng", payee: "Bên nhận", originScope: "Phạm vi",
   paymentMethod: "Phương thức", referenceCode: "Mã tham chiếu", unitPrice: "Đơn giá", itemTotal: "Giá bán",
   discountAmount: "Giảm giá", discountCode: "Mã giảm giá", subtotal: "Thành tiền", shippingAmount: "Vận chuyển",
-  taxAmount: "Thuế (tiền)", note: "Ghi chú", invoiceId: "ID hóa đơn",
+  taxAmount: "Thuế (tiền)", note: "Ghi chú", invoiceId: "ID hóa đơn", currencyCode: "Loại tiền",
 };
 const AUDIT_MONEY = ["amount", "amountAfterTax", "unitPrice", "itemTotal", "discountAmount", "subtotal", "shippingAmount", "taxAmount"];
 
-function auditValue(field, v) {
+/** Số tiền lưu theo loại tiền lúc nhập (`ccy`); lịch sử cũ không ghi loại tiền là USD. */
+function auditValue(field, v, ccy = "USD") {
   if (v === null || v === undefined || v === "") return '<span class="muted">—</span>';
-  if (AUDIT_MONEY.includes(field)) return esc(usd(v));
+  if (AUDIT_MONEY.includes(field)) return esc(fmtCcy(v, ccy));
   if (field === "taxPercent") return `${esc(v)}%`;
   if (field === "date") return esc(dmy(v));
   if (field === "categoryId") {
@@ -111,7 +112,11 @@ const HistoryPage = {
     const itemHtml = (item) => {
       const a = AUDIT_ACTIONS[item.action] || { text: item.action, icon: "info", tone: "update" };
       const time = new Date(item.createdAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
-      const changes = item.changes ? Object.entries(item.changes) : [];
+      // Loại tiền không đổi chỉ để biết số tiền là € hay $, không hiện thành một dòng thay đổi.
+      const cur = item.changes?.currencyCode;
+      const ccyFrom = cur?.from || cur?.to || "USD";
+      const ccyTo = cur?.to || "USD";
+      const changes = item.changes ? Object.entries(item.changes).filter(([f, c]) => f !== "currencyCode" || c.from !== c.to) : [];
       const isOpen = item.action === "UPDATE" || s.open.has(item.id);
       const isEntry = item.entityType === "INCOME" || item.entityType === "EXPENSE";
       const detail = item.action.startsWith("ATTACH") ? `Tệp: ${item.detail}` : isEntry ? item.detail : "";
@@ -136,8 +141,8 @@ const HistoryPage = {
                   ${changes.map(([field, c]) => `
                     <tr>
                       <td>${esc(AUDIT_FIELDS[field] || field)}</td>
-                      <td class="audit-from" translate="no">${item.action === "CREATE" ? "" : auditValue(field, c.from)}</td>
-                      <td class="audit-to" translate="no">${auditValue(field, c.to)}</td>
+                      <td class="audit-from" translate="no">${item.action === "CREATE" ? "" : auditValue(field, c.from, ccyFrom)}</td>
+                      <td class="audit-to" translate="no">${auditValue(field, c.to, ccyTo)}</td>
                     </tr>`).join("")}
                 </tbody>
               </table>` : ""}
