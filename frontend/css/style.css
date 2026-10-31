@@ -5233,3 +5233,33 @@ th.amount .es-sort-th { justify-content: flex-end; }
 /* Tên sản phẩm dài: xuống dòng, tối đa 2 dòng rồi "…", không tràn sang cột bên cạnh (ô bảng mặc định không xuống dòng). */
 .es-product-text { flex: 1; overflow: hidden; }
 .es-table td .es-title { white-space: normal; overflow-wrap: anywhere; }
+
+/* ---- Bảng: chữ đen đậm cho dễ đọc (giao diện sáng) */
+html:not([data-theme="dark"]) table tbody td { color: #0B1220; font-weight: 600; }
+html:not([data-theme="dark"]) table thead th { color: #111827; font-weight: 700; }
+html:not([data-theme="dark"]) table tbody td :is(.cell-date, .cell-tax-pct, .cell-creator, .cell-sub, .cell-payee, .cell-qty, .muted, .etsy-note) {
+  color: #1F2937; font-weight: 600;
+}
+html:not([data-theme="dark"]) table tbody td :is(.cell-product-name, .cell-link, .es-title) { color: #000; font-weight: 700; }
+html:not([data-theme="dark"]) table tbody td .cell-code { color: #0F172A; }
+html:not([data-theme="dark"]) table tbody td .empty-state :is(p, .muted) { font-weight: 400; color: var(--text-secondary); }
+
+/* ---- Kéo giãn cột như Excel (js/colresize.js) */
+:where(th.col-resizable) { position: relative; }
+.col-resizer {
+  position: absolute; top: 0; right: -4px; bottom: 0; width: 9px; z-index: 2;
+  cursor: col-resize; touch-action: none;
+}
+.col-resizer::after {
+  content: ""; position: absolute; top: 25%; bottom: 25%; left: 4px; width: 1px; background: #CBD5E1;
+}
+th:hover > .col-resizer::after, .col-resizer:hover::after { top: 0; bottom: 0; width: 2px; left: 3px; background: var(--primary, #2563EB); }
+th:last-child > .col-resizer { right: 0; }
+body.is-col-resizing, body.is-col-resizing * { cursor: col-resize !important; user-select: none !important; }
+table.is-resized { table-layout: fixed; min-width: 0 !important; }
+table.is-resized th, table.is-resized td { overflow: hidden; text-overflow: ellipsis; }
+table.is-resized :is(.cell-product-name, .cell-link, .cell-product) { max-width: 100%; }
+html[data-theme="dark"] .col-resizer::after { background: #475569; }
+
+/* Chứng từ của khoản thu hiện kèm trong panel khoản chi tiền xưởng / tiền ship */
+.attach-linked-head { margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--border); }

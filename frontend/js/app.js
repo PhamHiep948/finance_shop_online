@@ -338,6 +338,7 @@ applyTheme();
 renderCcyToggle();
 renderLangToggle();
 i18nStart();
+initColumnResize();
 onStoreChange(renderPage);
 onStoreChange(renderCcyToggle);
 onStoreChange(renderLangToggle);
