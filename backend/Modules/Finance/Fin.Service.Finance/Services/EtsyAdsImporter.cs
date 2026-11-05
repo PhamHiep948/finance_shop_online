@@ -58,7 +58,7 @@ namespace Fin.Service.Finance.Services
                     month.ExpenseAmount = expense.Amount;
                     month.ExpenseCurrency = expense.CurrencyCode;
                     month.Deleted = expense.IsDeleted;
-                    month.Edited = IsEditedByHand(expense, month.AdsUsd);
+                    month.Edited = IsEditedByHand(expense, month);
                 }
             }
 
@@ -74,47 +74,50 @@ namespace Fin.Service.Finance.Services
             };
         }
 
-        // Brings the expenses of the months from..to (first days of months) in step with Etsy.
+        /// <summary>
+        /// Cập nhật khoản chi quảng cáo của các tháng <paramref name="fromMonth"/>..<paramref name="toMonth"/> theo Etsy:
+        /// tháng có phí mà chưa có khoản chi thì thêm; khoản đã có thì cập nhật số tiền và loại tiền theo Etsy.
+        /// Bỏ qua khoản đã xóa, khoản người dùng đã sửa tay, và khoản thuộc kỳ đã khóa sổ.
+        /// Khoản cũ chưa nhớ số Etsy mà vẫn đúng số Etsy thì chỉ ghi nhớ lại (không tính là thay đổi).
+        /// </summary>
         public async Task<EtsyAdsSyncResponse> SyncAsync(DateOnly fromMonth, DateOnly toMonth, string auditNote, CancellationToken cancellationToken)
         {
             var fees = await GetAsync(fromMonth, toMonth.AddMonths(1).AddDays(-1), cancellationToken);
             var expenses = await ExpensesAsync(fees.Months, cancellationToken);
             var fresh = new List<EtsyAdsMonthDto>();
-            // Before is null when only the remembered Etsy amount was filled in (no visible change).
             var changed = new List<(LedgerEntry Entry, LedgerEntryResponse? Before)>();
             foreach (var month in fees.Months)
             {
                 if (!expenses.TryGetValue(EtsyAdsCalculator.OrderCode(month.Month), out var expense))
                 {
-                    if (month.AdsUsd > 0)
+                    if (month.StoredAmount > 0)
                     {
                         fresh.Add(month);
                     }
                     continue;
                 }
-                // A deleted entry stays deleted, a hand-corrected one keeps its amount, a locked period does not move.
-                if (expense.IsDeleted || IsEditedByHand(expense, month.AdsUsd) || _periodLock.Check(expense.Date) is not null)
+                if (expense.IsDeleted || IsEditedByHand(expense, month) || _periodLock.Check(expense.Date) is not null)
                 {
                     continue;
                 }
-                if (expense.Details.EtsyAmount is null)
+                if (expense.Amount == month.StoredAmount && expense.CurrencyCode == month.StoredCurrency)
                 {
-                    // Written before the Etsy amount was remembered, and still equal to it: remember it from now on.
-                    expense.Details = Copy(expense.Details, d => d.EtsyAmount = month.AdsUsd);
-                    changed.Add((expense, null));
-                    continue;
-                }
-                if (expense.Amount != month.AdsUsd)
-                {
-                    var before = LedgerEntryMapper.ToResponse(expense, 0);
-                    expense.SetAmounts(month.AdsUsd, expense.TaxPercent);
-                    expense.Details = Copy(expense.Details, d =>
+                    if (expense.Details.EtsyAmount != month.StoredAmount || expense.Details.EtsyCurrency != month.StoredCurrency)
                     {
-                        d.EtsyAmount = month.AdsUsd;
-                        d.Note = Note(month);
-                    });
-                    changed.Add((expense, before));
+                        expense.Details = Copy(expense.Details, d => (d.EtsyAmount, d.EtsyCurrency) = (month.StoredAmount, month.StoredCurrency));
+                        changed.Add((expense, null));
+                    }
+                    continue;
                 }
+                var before = LedgerEntryMapper.ToResponse(expense, 0);
+                expense.CurrencyCode = month.StoredCurrency;
+                expense.SetAmounts(month.StoredAmount, expense.TaxPercent);
+                expense.Details = Copy(expense.Details, d =>
+                {
+                    (d.EtsyAmount, d.EtsyCurrency) = (month.StoredAmount, month.StoredCurrency);
+                    d.Note = Note(month);
+                });
+                changed.Add((expense, before));
             }
             if (fresh.Count == 0 && changed.Count == 0)
             {
@@ -157,12 +160,21 @@ namespace Fin.Service.Finance.Services
                 .ToDictionary(g => g.Key, g => g.OrderBy(e => e.IsDeleted).ThenBy(e => e.Id).First());
         }
 
-        // The amount no longer matches what was last taken from Etsy, so the user changed it (re-typing it in EUR counts
-        // as a change too). An entry written before the Etsy amount was remembered counts as changed unless it still
-        // equals the current Etsy amount.
-        private static bool IsEditedByHand(LedgerEntry expense, decimal etsyAmountUsd) =>
-            expense.CurrencyCode != SalesValues.DefaultCurrency
-            || (expense.Details.EtsyAmount is { } synced ? expense.Amount != synced : expense.Amount != etsyAmountUsd);
+        /// <summary>
+        /// Người dùng đã sửa tay khoản chi quảng cáo chưa: số tiền hoặc loại tiền không còn khớp với lần lấy từ Etsy gần
+        /// nhất. Khoản ghi trước khi có trường ghi nhớ thì coi là chưa sửa nếu vẫn đúng số Etsy hiện tại, tính theo USD
+        /// (cách lưu cũ) hoặc theo loại tiền gốc.
+        /// </summary>
+        private static bool IsEditedByHand(LedgerEntry expense, EtsyAdsMonthDto month)
+        {
+            if (expense.Details.EtsyAmount is { } synced)
+            {
+                return expense.Amount != synced || expense.CurrencyCode != (expense.Details.EtsyCurrency ?? SalesValues.DefaultCurrency);
+            }
+            var oldWay = expense.CurrencyCode == SalesValues.DefaultCurrency && expense.Amount == month.AdsUsd;
+            var newWay = expense.CurrencyCode == month.StoredCurrency && expense.Amount == month.StoredAmount;
+            return !oldWay && !newWay;
+        }
 
         private static LedgerDetails Copy(LedgerDetails details, Action<LedgerDetails> change)
         {
@@ -171,18 +183,22 @@ namespace Fin.Service.Finance.Services
                 ReferenceCode = details.ReferenceCode, UnitPrice = details.UnitPrice, ItemTotal = details.ItemTotal,
                 DiscountAmount = details.DiscountAmount, DiscountCode = details.DiscountCode, Subtotal = details.Subtotal,
                 ShippingAmount = details.ShippingAmount, TaxAmount = details.TaxAmount, Note = details.Note,
-                InvoiceId = details.InvoiceId, EtsyAmount = details.EtsyAmount,
+                InvoiceId = details.InvoiceId, EtsyAmount = details.EtsyAmount, EtsyCurrency = details.EtsyCurrency,
             };
             change(copy);
             return copy;
         }
 
+        /// <summary>
+        /// Ghi chú của khoản chi quảng cáo: tổng phí tháng theo loại tiền Etsy Payments, số đã quy sang USD (chỉ khi phải
+        /// ghi bằng USD), và tháng chưa hết thì số tiền còn tự cập nhật.
+        /// </summary>
         private string Note(EtsyAdsMonthDto month)
         {
             var label = $"{month.Month[5..]}/{month.Month[..4]}";
             var note = $"Tổng phí quảng cáo (Etsy Ads, Offsite Ads) tháng {label} lấy từ Etsy Payments: "
                 + $"{month.Ads.ToString("0.00", CultureInfo.InvariantCulture)} {month.Currency}.";
-            if (!month.Currency.Equals("USD", StringComparison.OrdinalIgnoreCase))
+            if (!month.StoredCurrency.Equals(month.Currency, StringComparison.OrdinalIgnoreCase))
             {
                 note += $" Quy đổi ra {month.AdsUsd.ToString("0.00", CultureInfo.InvariantCulture)} USD theo tỷ giá ngày / tháng tự nhập (chưa nhập tính 1 EUR = 1 USD).";
             }
@@ -207,9 +223,10 @@ namespace Fin.Service.Finance.Services
                 SalesChannel = SalesValues.ChannelEtsy,
                 Payee = "Etsy",
                 Source = EntrySources.Etsy,
-                Details = new LedgerDetails { ReferenceCode = code, Note = Note(month), EtsyAmount = month.AdsUsd },
+                CurrencyCode = month.StoredCurrency,
+                Details = new LedgerDetails { ReferenceCode = code, Note = Note(month), EtsyAmount = month.StoredAmount, EtsyCurrency = month.StoredCurrency },
             };
-            entry.SetAmounts(month.AdsUsd, 0);
+            entry.SetAmounts(month.StoredAmount, 0);
             return entry;
         }
     }

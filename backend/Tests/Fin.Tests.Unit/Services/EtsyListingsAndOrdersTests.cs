@@ -254,20 +254,22 @@ namespace Fin.Tests.Unit.Services
         // ---- Đơn nhập vào Khoản thu
 
         [Fact]
-        public async Task Orders_of_a_day_with_its_own_rate_use_that_rate()
+        public async Task Euro_orders_are_listed_and_imported_in_euro_whatever_the_rates()
         {
             var unitOfWork = new InMemoryFinanceUnitOfWork()
                 .WithMonthlyRate("2026-09", 1.1m)
                 .WithDailyRate(new DateOnly(2026, 9, 2), 1.3m);
-            _etsy.Receipts.AddRange([Receipt("1", new DateOnly(2026, 9, 1), (1, 1, 10m)), Receipt("2", new DateOnly(2026, 9, 2), (1, 1, 10m))]);
+            _etsy.Receipts.Add(Receipt("1", new DateOnly(2026, 9, 2), (1, 1, 10m)));
 
             var result = await new GetEtsyOrdersHandler(unitOfWork, _etsy, EtsyOptionsFor.Shop())
                 .Handle(new GetEtsyOrdersQuery { From = "2026-09-01", To = "2026-09-30" }, CancellationToken.None);
+            var order = Assert.Single(result.Data!);
+            Assert.Equal(("EUR", 10m), (order.Currency, order.Amount));
 
-            var orders = result.Data!.ToDictionary(o => o.ReceiptId);
-            Assert.Equal(11m, orders["1"].Amount);
-            Assert.Equal(13m, orders["2"].Amount);
-            Assert.Contains("ngày 02/09/2026", orders["2"].Note);
+            await new EtsyOrderImporter(unitOfWork, new AuditTrail(unitOfWork)).ImportAsync([order], "Nhập từ Etsy", CancellationToken.None);
+
+            var entry = Assert.Single(unitOfWork.Entries);
+            Assert.Equal(("EUR", 10m, 10m), (entry.CurrencyCode, entry.Amount, entry.AmountAfterTax));
         }
     }
 }

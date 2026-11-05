@@ -12,8 +12,13 @@ namespace Fin.Domain.Finance.Entities
         public decimal? TaxAmount { get; set; }
         public string? Note { get; set; }
         public string? InvoiceId { get; set; }
-        // Etsy ad expense only: the USD amount last taken from Etsy. While the entry still has this amount it follows
-        // Etsy; once the user changes it, the entry is left alone.
+        /// <summary>
+        /// Chỉ dùng cho khoản chi quảng cáo Etsy: số tiền lấy từ Etsy lần cuối. Khi khoản chi vẫn đúng số này (và đúng
+        /// <see cref="EtsyCurrency"/>) thì nó tự cập nhật theo Etsy; người dùng sửa tay thì không tự cập nhật nữa.
+        /// </summary>
         public decimal? EtsyAmount { get; set; }
+
+        /// <summary>Loại tiền của <see cref="EtsyAmount"/>; để trống = USD (khoản ghi trước khi có trường này).</summary>
+        public string? EtsyCurrency { get; set; }
     }
 }

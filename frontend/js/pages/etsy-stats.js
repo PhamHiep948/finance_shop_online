@@ -114,10 +114,13 @@ const EtsyStatsPage = {
     show();
   },
 
-  /** Tháng có tiền quảng cáo mà Khoản chi chưa có, hoặc số trong Khoản chi đã cũ (trừ khoản đã sửa tay / đã xóa). */
+  /**
+   * Tháng có tiền quảng cáo mà Khoản chi chưa có, hoặc số / loại tiền trong Khoản chi đã cũ so với Etsy
+   * (trừ khoản đã sửa tay / đã xóa). So theo số và loại tiền sẽ ghi vào Khoản chi (storedAmount / storedCurrency).
+   */
   adsPending(fees) {
-    return (fees?.months || []).some((m) => !m.deleted && !m.edited && m.adsUsd > 0
-      && (!m.imported || Number(m.expenseAmount) !== Number(m.adsUsd)));
+    return (fees?.months || []).some((m) => !m.deleted && !m.edited && m.storedAmount > 0
+      && (!m.imported || Number(m.expenseAmount) !== Number(m.storedAmount) || m.expenseCurrency !== m.storedCurrency));
   },
 
   /** Ghi / cập nhật tiền quảng cáo vào Khoản chi ngay (không chờ lượt tự động mỗi giờ), rồi tải lại bảng. */

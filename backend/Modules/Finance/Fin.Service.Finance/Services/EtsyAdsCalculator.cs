@@ -1,4 +1,5 @@
 using System.Globalization;
+using Fin.Domain.Finance.Constants;
 using Fin.Domain.Finance.Entities;
 using Fin.Infrastructure.Finance.Models;
 using Fin.Model.Dto.Finance.Responses;
@@ -23,7 +24,12 @@ namespace Fin.Service.Finance.Services
                 || AdDescriptionMarkers.Any(description.Contains);
         }
 
-        // One row per month from `from` to `to`, including months without any ad charge.
+        /// <summary>
+        /// Một dòng cho mỗi tháng từ <paramref name="from"/> đến <paramref name="to"/>, kể cả tháng không có phí quảng cáo.
+        /// Phí = −(tổng tiền trừ + tiền Etsy hoàn lại), tính theo loại tiền Etsy Payments; số USD quy từng khoản phí theo
+        /// tỷ giá ngày của nó (tỷ giá ngày tự nhập, không có thì theo tháng). Số ghi vào khoản chi giữ loại tiền gốc
+        /// khi cả tháng chỉ có một loại tiền USD / EUR.
+        /// </summary>
         public static List<EtsyAdsMonthDto> Months(
             IReadOnlyCollection<EtsyLedgerEntry> entries, DateOnly from, DateOnly to, DateOnly today,
             FxRateBook rates, IReadOnlyCollection<string> extraTypes)
@@ -39,6 +45,9 @@ namespace Fin.Service.Finance.Services
                 var spent = -inMonth.Sum(e => e.Amount);
                 var charges = inMonth.Where(e => e.Amount < 0).ToList();
                 var currency = inMonth.FirstOrDefault()?.Currency ?? fallbackCurrency;
+                var adsUsd = decimal.Round(-inMonth.Sum(e => e.Amount * rates.ToUsdRate(e.Currency, e.Created)), 2, MidpointRounding.AwayFromZero);
+                var keepCurrency = SalesValues.IsKnownCurrency(currency) && !string.IsNullOrWhiteSpace(currency)
+                    && inMonth.All(e => e.Currency.Equals(currency, StringComparison.OrdinalIgnoreCase));
                 months.Add(new EtsyAdsMonthDto
                 {
                     Month = key,
@@ -47,8 +56,9 @@ namespace Fin.Service.Finance.Services
                     OffsiteAds = -charges.Where(IsOffsite).Sum(e => e.Amount),
                     Refunds = inMonth.Where(e => e.Amount > 0).Sum(e => e.Amount),
                     Currency = currency,
-                    // Each charge converts at the rate of its own day (a typed daily rate, else the month's).
-                    AdsUsd = decimal.Round(-inMonth.Sum(e => e.Amount * rates.ToUsdRate(e.Currency, e.Created)), 2, MidpointRounding.AwayFromZero),
+                    AdsUsd = adsUsd,
+                    StoredAmount = keepCurrency ? decimal.Round(spent, 2, MidpointRounding.AwayFromZero) : adsUsd,
+                    StoredCurrency = keepCurrency ? SalesValues.CurrencyOf(currency) : SalesValues.DefaultCurrency,
                     Complete = month.AddMonths(1) <= today,
                 });
             }

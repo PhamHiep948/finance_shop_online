@@ -275,16 +275,17 @@ test("kết quả của khoảng ngày cũ về muộn thì bị bỏ", async ()
 
 // ---- Tiền quảng cáo tự vào Khoản chi
 
-const M = (o) => ({ month: "2026-10", ads: 10, adsUsd: 11.6, currency: "EUR", complete: false, imported: false, deleted: false, edited: false, expenseId: null, expenseAmount: null, ...o });
+const M = (o) => ({ month: "2026-10", ads: 10, adsUsd: 11.6, currency: "EUR", storedAmount: 10, storedCurrency: "EUR", complete: false, imported: false, deleted: false, edited: false, expenseId: null, expenseAmount: null, expenseCurrency: null, ...o });
 
-test("tháng có quảng cáo mà chưa ghi, hoặc số đã đổi, thì cần cập nhật; khoản sửa tay / đã xóa thì không", () => {
+test("tháng có quảng cáo mà chưa ghi, hoặc số / loại tiền đã đổi, thì cần cập nhật; khoản sửa tay / đã xóa thì không", () => {
   const { page } = setup();
   assert.equal(page.adsPending({ months: [M({})] }), true);
-  assert.equal(page.adsPending({ months: [M({ imported: true, expenseId: 5, expenseAmount: 9 })] }), true);
-  assert.equal(page.adsPending({ months: [M({ imported: true, expenseId: 5, expenseAmount: 11.6 })] }), false);
+  assert.equal(page.adsPending({ months: [M({ imported: true, expenseId: 5, expenseAmount: 9, expenseCurrency: "EUR" })] }), true);
+  assert.equal(page.adsPending({ months: [M({ imported: true, expenseId: 5, expenseAmount: 10, expenseCurrency: "EUR" })] }), false);
+  assert.equal(page.adsPending({ months: [M({ imported: true, expenseId: 5, expenseAmount: 11.6, expenseCurrency: "USD" })] }), true);
   assert.equal(page.adsPending({ months: [M({ imported: true, edited: true, expenseId: 5, expenseAmount: 7 })] }), false);
   assert.equal(page.adsPending({ months: [M({ imported: true, deleted: true, expenseId: 5, expenseAmount: 9 })] }), false);
-  assert.equal(page.adsPending({ months: [M({ ads: 0, adsUsd: 0 })] }), false);
+  assert.equal(page.adsPending({ months: [M({ ads: 0, adsUsd: 0, storedAmount: 0 })] }), false);
 });
 
 test("mở trang mà có tháng chờ ghi thì tự cập nhật Khoản chi ngay", async () => {

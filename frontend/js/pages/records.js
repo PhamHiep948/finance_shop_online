@@ -951,7 +951,8 @@ function createRecordsPage(kind) {
     if (!e.open) return `<div class="modal-back" data-close="etsy"></div>`;
     const orders = e.orders || [];
     const picked = orders.filter((o) => e.selected.has(o.receiptId));
-    const pickedTotal = picked.reduce((t, o) => t + Number(o.amountAfterTax), 0);
+    const pickedTotal = picked.reduce((t, o) => t + toDisplay(usdOf(o.amountAfterTax, o.currency, o.date), store.ccy, o.date), 0);
+    const orderMoney = (v, c) => (c === "USD" || c === "EUR" ? fmtCcy(v, c) : `${round2(Number(v) || 0)} ${c}`);
     const selectable = orders.filter((o) => !o.imported);
     const allPicked = selectable.length > 0 && selectable.every((o) => e.selected.has(o.receiptId));
     let body;
@@ -977,9 +978,9 @@ function createRecordsPage(kind) {
                   <td><span translate="no">${esc(o.description)}</span>${o.imported ? ' <span class="badge ok">Đã nhập</span>' : ""}${o.note ? `<div class="muted etsy-note" translate="no">${esc(o.note)}</div>` : ""}</td>
                   <td class="amount">${o.quantity}</td>
                   <td><span translate="no">${esc(o.country)}</span> · <span class="muted">${o.saleRegion === "IN_EU" ? "EU" : "Ngoài EU"}</span></td>
-                  <td class="amount">${esc(usd(o.amount))}</td>
-                  <td class="amount muted">${esc(usd(Number(o.amountAfterTax) - Number(o.amount)))}<div class="etsy-note">${esc(pctLabel(o.taxPercent))}</div></td>
-                  <td class="amount"><b>${esc(usd(o.amountAfterTax))}</b></td>
+                  <td class="amount">${esc(orderMoney(o.amount, o.currency))}</td>
+                  <td class="amount muted">${esc(orderMoney(Number(o.amountAfterTax) - Number(o.amount), o.currency))}<div class="etsy-note">${esc(pctLabel(o.taxPercent))}</div></td>
+                  <td class="amount"><b>${esc(orderMoney(o.amountAfterTax, o.currency))}</b></td>
                 </tr>`).join("")}
             </tbody>
           </table>
@@ -1006,7 +1007,7 @@ function createRecordsPage(kind) {
           ${etsyRatesHtml()}
           ${body}
           <div class="modal-actions etsy-foot">
-            <span class="muted">${picked.length ? `Đã chọn ${picked.length} đơn · ${esc(usd(pickedTotal))} (gồm thuế)` : "Đơn nhập vào để trống nhóm sản phẩm (nhập sau), kênh bán Etsy Store."}</span>
+            <span class="muted">${picked.length ? `Đã chọn ${picked.length} đơn · ${esc(fmtCcy(pickedTotal, store.ccy))} (gồm thuế)` : "Đơn nhập vào để trống nhóm sản phẩm (nhập sau), kênh bán Etsy Store."}</span>
             <button class="btn secondary" type="button" data-action="etsy-close">Đóng</button>
             <button class="btn primary" type="button" data-action="etsy-import"${picked.length && !e.importing ? "" : " disabled"}>
               ${e.importing ? "Đang nhập…" : `Nhập ${picked.length || ""} đơn`}

@@ -60,6 +60,10 @@ namespace Fin.Service.Finance.Services
             && !string.IsNullOrWhiteSpace(order.Description)
             && order.Amount >= 0;
 
+        /// <summary>
+        /// Tạo khoản thu từ một đơn Etsy. Số tiền lưu đúng loại tiền của đơn (EUR lưu EUR, USD lưu USD), không quy đổi.
+        /// Etsy không có nhóm sản phẩm nên để trống, người dùng tự chọn sau.
+        /// </summary>
         private static LedgerEntry ToEntry(EtsyOrderDto order)
         {
             var description = order.Description.Trim();
@@ -68,8 +72,8 @@ namespace Fin.Service.Finance.Services
                 Kind = LedgerKinds.Income,
                 Date = DateOnly.ParseExact(order.Date, FinanceConstants.IsoDateFormat, CultureInfo.InvariantCulture),
                 Description = description.Length > FinanceConstants.DescriptionMaxLength ? description[..FinanceConstants.DescriptionMaxLength] : description,
-                // Etsy has no product group: it starts empty and is filled in by hand.
                 CategoryId = null,
+                CurrencyCode = SalesValues.CurrencyOf(order.Currency),
                 OrderCode = order.ReceiptId,
                 SaleRegion = order.SaleRegion,
                 SalesChannel = SalesValues.ChannelEtsy,

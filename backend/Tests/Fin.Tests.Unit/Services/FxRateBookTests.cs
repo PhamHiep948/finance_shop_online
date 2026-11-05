@@ -34,17 +34,6 @@ namespace Fin.Tests.Unit.Services
         }
 
         [Fact]
-        public void Etsy_order_of_a_typed_day_uses_the_daily_rate()
-        {
-            var receipt = new EtsyReceipt("1", new DateOnly(2026, 8, 6), "EUR", [new EtsyReceiptItem("Lilie", 1)], 10m, 0, 10m, 0, 0, "US", 0);
-
-            var order = EtsyOrderMapper.Map(receipt, Book, 19m);
-
-            Assert.Equal(12m, order.Amount);
-            Assert.Contains("tỷ giá tự nhập ngày 06/08/2026", order.Note);
-        }
-
-        [Fact]
         public void Ads_convert_each_charge_at_the_rate_of_its_day()
         {
             var entries = new[]

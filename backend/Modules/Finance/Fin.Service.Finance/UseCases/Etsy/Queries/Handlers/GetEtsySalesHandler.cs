@@ -45,8 +45,8 @@ namespace Fin.Service.Finance.UseCases.Etsy.Queries.Handlers
                 To = to.ToString(FinanceConstants.IsoDateFormat, CultureInfo.InvariantCulture),
                 Orders = receipts.Count,
                 Items = receipts.Sum(r => r.Items.Sum(i => i.Quantity)),
-                // Mapped like an imported order, so the total matches what "Khoản thu" shows for these orders.
-                Revenue = receipts.Sum(r => EtsyOrderMapper.Map(r, rates, vat).Amount),
+                Revenue = receipts.Sum(r => decimal.Round(
+                    EtsyOrderMapper.Map(r, vat).Amount * rates.ToUsdRate(r.Currency, r.Created), 2, MidpointRounding.AwayFromZero)),
                 Listings = lines
                     .GroupBy(x => x.Item.ListingId)
                     .Select(g => new EtsyListingSalesDto

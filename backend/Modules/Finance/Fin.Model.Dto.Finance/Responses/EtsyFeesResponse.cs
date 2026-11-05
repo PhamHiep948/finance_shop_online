@@ -22,6 +22,16 @@ namespace Fin.Model.Dto.Finance.Responses
         public decimal Refunds { get; set; }
         public string Currency { get; set; } = "USD";
         public decimal AdsUsd { get; set; }
+
+        /// <summary>
+        /// Số tiền và loại tiền ghi vào khoản chi quảng cáo của tháng: đúng loại tiền Etsy Payments (USD / EUR), không
+        /// quy đổi. Tháng có phí bằng nhiều loại tiền, hoặc loại tiền khác USD / EUR, thì ghi số đã quy sang USD.
+        /// </summary>
+        public decimal StoredAmount { get; set; }
+
+        /// <summary>Loại tiền của <see cref="StoredAmount"/>.</summary>
+        public string StoredCurrency { get; set; } = "USD";
+
         // A month that has not ended yet may still receive charges, so it cannot be imported.
         public bool Complete { get; set; }
         // The expense of this month (deleted ones included), its amount, and whether the user changed it or deleted it.

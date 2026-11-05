@@ -17,7 +17,7 @@ Mỗi quy tắc ghi kèm nơi cài đặt trong code để tra cứu nhanh.
 | ID | Quy tắc | Cài đặt |
 |---|---|---|
 | BR-10 | Tỷ giá nhập theo **tháng**: 1 EUR = ? USD, từ 0,5 đến 3 | `SetMonthlyRateValidator` |
-| BR-11 | Tháng chưa nhập (chưa có thông báo) → **mặc định 1** cho cả hiển thị và quy đổi đơn Etsy bằng EUR | `EtsyOrderMapper`, `frontend/js/format.js` |
+| BR-11 | Tháng chưa nhập (chưa có thông báo) → **mặc định 1** khi hiển thị / cộng báo cáo. Đơn và phí quảng cáo Etsy lưu đúng loại tiền Etsy trả về, không quy đổi lúc nhập (tháng phí quảng cáo có nhiều loại tiền thì ghi số đã quy sang USD) | `EtsyOrderMapper`, `EtsyAdsCalculator`, `frontend/js/format.js` |
 | BR-12 | Hiển thị EUR: mỗi khoản quy đổi theo tỷ giá **tháng của chính khoản đó**, rồi mới cộng | `frontend` (`toDisplay`) |
 | BR-13 | Tỷ giá ECB chỉ để tham khảo trên trang Tỷ giá | `FrankfurterEcbRateProvider` |
 

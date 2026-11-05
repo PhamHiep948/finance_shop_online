@@ -250,7 +250,7 @@ namespace Fin.Tests.Unit.Services
         }
 
         [Fact]
-        public async Task Eur_ads_convert_by_the_rate_of_each_day_and_say_so_in_the_note()
+        public async Task Eur_ads_are_stored_in_euro_without_converting()
         {
             _unitOfWork.WithMonthlyRate("2026-09", 1.15m).WithDailyRate(new DateOnly(2026, 9, 3), 1.2m);
             _etsy.LedgerEntries.AddRange([Ad(9, 3, -10m, "EUR"), Ad(9, 4, -10m, "EUR")]);
@@ -258,9 +258,54 @@ namespace Fin.Tests.Unit.Services
             await SyncAsync("2026-09");
 
             var entry = Single("2026-09");
-            Assert.Equal(23.5m, entry.Amount);
+            Assert.Equal(("EUR", 20m), (entry.CurrencyCode, entry.Amount));
+            Assert.Equal((20m, "EUR"), (entry.Details.EtsyAmount, entry.Details.EtsyCurrency));
             Assert.Contains("20.00 EUR", entry.Details.Note);
-            Assert.Contains("23.50 USD", entry.Details.Note);
+            Assert.DoesNotContain("USD", entry.Details.Note);
+        }
+
+        [Fact]
+        public async Task A_month_charged_in_two_currencies_is_stored_in_usd_at_the_rate_of_each_day()
+        {
+            _unitOfWork.WithDailyRate(new DateOnly(2026, 9, 3), 1.2m);
+            _etsy.LedgerEntries.AddRange([Ad(9, 3, -10m, "EUR"), Ad(9, 4, -5m, "USD")]);
+
+            await SyncAsync("2026-09");
+
+            var entry = Single("2026-09");
+            Assert.Equal(("USD", 17m), (entry.CurrencyCode, entry.Amount));
+            Assert.Contains("17.00 USD", entry.Details.Note);
+        }
+
+        [Fact]
+        public async Task An_entry_saved_in_usd_by_the_old_version_switches_to_the_euro_amount()
+        {
+            _unitOfWork.WithMonthlyRate("2026-09", 1.15m);
+            var old = new LedgerEntry
+            {
+                Kind = LedgerKinds.Expense, OrderCode = "ADS-2026-09", SalesChannel = SalesValues.ChannelEtsy, Source = EntrySources.Etsy,
+                Details = new LedgerDetails { EtsyAmount = 23m },
+            };
+            old.SetAmounts(23m, 0);
+            _unitOfWork.WithEntry(old);
+            _etsy.LedgerEntries.Add(Ad(9, 3, -20m, "EUR"));
+
+            Assert.Equal((0, 1), await SyncAsync("2026-09"));
+
+            Assert.Equal(("EUR", 20m), (old.CurrencyCode, old.Amount));
+            Assert.Equal((20m, "EUR"), (old.Details.EtsyAmount, old.Details.EtsyCurrency));
+        }
+
+        [Fact]
+        public async Task An_entry_whose_currency_was_changed_by_hand_is_left_alone()
+        {
+            _etsy.LedgerEntries.Add(Ad(9, 3, -20m, "EUR"));
+            await SyncAsync("2026-09");
+            var entry = Single("2026-09");
+            entry.CurrencyCode = "USD";
+
+            Assert.Equal((0, 0), await SyncAsync("2026-09"));
+            Assert.Equal(("USD", 20m), (entry.CurrencyCode, entry.Amount));
         }
 
         [Fact]

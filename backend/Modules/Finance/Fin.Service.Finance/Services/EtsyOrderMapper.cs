@@ -7,6 +7,7 @@ using Fin.Service.Finance.Constants;
 
 namespace Fin.Service.Finance.Services
 {
+    /// <summary>Đổi một đơn Etsy (receipt) thành dữ liệu đơn để hiện trong danh sách và nhập thành khoản thu.</summary>
     public static class EtsyOrderMapper
     {
         private const int TitleMaxLength = 180;
@@ -17,68 +18,34 @@ namespace Fin.Service.Finance.Services
             "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE",
         ];
 
-        public static EtsyOrderDto Map(EtsyReceipt receipt, IReadOnlyDictionary<string, decimal> monthlyRates, decimal euVatPercent) =>
-            Map(receipt, new FxRateBook(monthlyRates), euVatPercent);
-
-        public static EtsyOrderDto Map(EtsyReceipt receipt, FxRateBook rates, decimal euVatPercent)
+        /// <summary>
+        /// Đổi đơn Etsy thành <see cref="EtsyOrderDto"/>. Mọi số tiền giữ đúng loại tiền Etsy trả về (EUR vẫn là EUR),
+        /// không quy đổi; tỷ giá chỉ dùng khi hiển thị / cộng báo cáo.
+        /// Tiền nhận về = thành tiền + phí ship. Đơn trong EU: Etsy đã thu VAT nên tiền nhận về là số sau thuế, phần
+        /// trước thuế tính ngược theo <paramref name="euVatPercent"/>. Đơn ngoài EU: tiền nhận về là trước thuế, cộng
+        /// thêm đúng số thuế Etsy thu (không tính lại từ % đã làm tròn để khỏi lệch 1 cent).
+        /// </summary>
+        public static EtsyOrderDto Map(EtsyReceipt receipt, decimal euVatPercent)
         {
-            var isEur = receipt.Currency.Equals("EUR", StringComparison.OrdinalIgnoreCase);
-            var monthLabel = receipt.Created.ToString("MM/yyyy", CultureInfo.InvariantCulture);
-            var dayLabel = receipt.Created.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture);
-            // A day with its own typed rate uses it; otherwise the month's rate; a month without one converts at
-            // 1 EUR = 1 USD until the user enters it.
-            var (bookRate, source) = rates.EurToUsd(receipt.Created);
-            var rate = isEur ? bookRate : 1m;
-            decimal Usd(decimal value) => decimal.Round(value * rate, 2, MidpointRounding.AwayFromZero);
-
+            var currency = receipt.Currency.ToUpperInvariant();
             var subtotal = receipt.Subtotal == 0 ? receipt.TotalPrice - receipt.Discount : receipt.Subtotal;
-            // Convert the sum once: rounding subtotal and shipping separately could add a stray cent.
-            var received = Usd(subtotal + receipt.Shipping);
+            var received = Round(subtotal + receipt.Shipping);
             var isEu = EuCountries.Contains(receipt.Country.ToUpperInvariant());
 
-            decimal amount, afterTax, taxPercent, taxUsd;
+            decimal amount, afterTax, taxPercent, tax;
             if (isEu)
             {
-                // Inside the EU Etsy collects the VAT, so the money received is already the post-tax amount.
                 taxPercent = euVatPercent;
                 afterTax = received;
                 amount = LedgerEntry.BeforeTax(received, taxPercent);
-                taxUsd = afterTax - amount;
+                tax = afterTax - amount;
             }
             else
             {
                 amount = received;
-                taxUsd = Usd(receipt.Tax);
-                taxPercent = amount == 0 ? 0 : decimal.Round(taxUsd / amount * 100, 2);
-                // The tax Etsy collected is exact; recomputing it from the rounded percent would round twice.
-                afterTax = amount + taxUsd;
-            }
-
-            var notes = new List<string>();
-            if (isEur && source == FxRateSource.Daily)
-            {
-                notes.Add($"Quy đổi từ EUR theo tỷ giá tự nhập ngày {dayLabel}: 1 EUR = {rate.ToString(CultureInfo.InvariantCulture)} USD.");
-            }
-            else if (isEur && source == FxRateSource.Monthly)
-            {
-                notes.Add($"Quy đổi từ EUR theo tỷ giá tự nhập tháng {monthLabel}: 1 EUR = {rate.ToString(CultureInfo.InvariantCulture)} USD.");
-            }
-            else if (isEur)
-            {
-                notes.Add($"Chưa nhập tỷ giá tháng {monthLabel}: tạm tính mặc định 1 EUR = 1 USD.");
-            }
-            else if (!receipt.Currency.Equals("USD", StringComparison.OrdinalIgnoreCase))
-            {
-                notes.Add($"Đơn bằng {receipt.Currency}, chưa quy đổi.");
-            }
-            if (isEu)
-            {
-                notes.Add($"Trong EU: Etsy đã thu VAT {taxPercent.ToString("0.##", CultureInfo.InvariantCulture)}%, tiền nhận về ghi vào Sau thuế.");
-            }
-            if (receipt.Refunded > 0)
-            {
-                // A partial refund keeps the order amount; the note lets the user adjust it by hand.
-                notes.Add($"Đơn đã được hoàn {receipt.Refunded.ToString("0.00", CultureInfo.InvariantCulture)} {receipt.Currency.ToUpperInvariant()}.");
+                tax = Round(receipt.Tax);
+                taxPercent = amount == 0 ? 0 : decimal.Round(tax / amount * 100, 2);
+                afterTax = amount + tax;
             }
 
             return new EtsyOrderDto
@@ -87,21 +54,47 @@ namespace Fin.Service.Finance.Services
                 Date = receipt.Created.ToString(FinanceConstants.IsoDateFormat, CultureInfo.InvariantCulture),
                 Description = Title(receipt),
                 Quantity = Math.Max(1, receipt.Items.Sum(i => i.Quantity)),
-                Currency = receipt.Currency.ToUpperInvariant(),
-                ItemTotal = Usd(receipt.TotalPrice),
-                Discount = Usd(receipt.Discount),
-                Subtotal = Usd(subtotal),
-                Shipping = Usd(receipt.Shipping),
-                Tax = taxUsd,
+                Currency = currency,
+                ItemTotal = Round(receipt.TotalPrice),
+                Discount = Round(receipt.Discount),
+                Subtotal = Round(subtotal),
+                Shipping = Round(receipt.Shipping),
+                Tax = tax,
                 Amount = amount,
                 AmountAfterTax = afterTax,
                 TaxPercent = taxPercent,
                 Country = receipt.Country.ToUpperInvariant(),
                 SaleRegion = isEu ? SalesValues.RegionInEu : SalesValues.RegionOutsideEu,
-                Note = notes.Count > 0 ? string.Join(" ", notes) : null,
+                Note = Note(receipt, currency, isEu, taxPercent),
             };
         }
 
+        /// <summary>
+        /// Ghi chú kèm đơn: đơn bằng loại tiền khác USD / EUR (lưu số gốc, chưa quy đổi), VAT Etsy đã thu với đơn
+        /// trong EU, và số tiền Etsy đã hoàn (đơn hoàn một phần vẫn giữ số tiền đơn, người dùng tự chỉnh).
+        /// </summary>
+        private static string? Note(EtsyReceipt receipt, string currency, bool isEu, decimal taxPercent)
+        {
+            var notes = new List<string>();
+            if (!SalesValues.IsKnownCurrency(currency))
+            {
+                notes.Add($"Đơn bằng {currency}, chưa quy đổi.");
+            }
+            if (isEu)
+            {
+                notes.Add($"Trong EU: Etsy đã thu VAT {taxPercent.ToString("0.##", CultureInfo.InvariantCulture)}%, tiền nhận về ghi vào Sau thuế.");
+            }
+            if (receipt.Refunded > 0)
+            {
+                notes.Add($"Đơn đã được hoàn {receipt.Refunded.ToString("0.00", CultureInfo.InvariantCulture)} {currency}.");
+            }
+            return notes.Count > 0 ? string.Join(" ", notes) : null;
+        }
+
+        /// <summary>Làm tròn số tiền 2 chữ số (0.5 làm tròn lên).</summary>
+        private static decimal Round(decimal value) => decimal.Round(value, 2, MidpointRounding.AwayFromZero);
+
+        /// <summary>Tên khoản thu: tên sản phẩm đầu tiên (cắt bớt nếu quá dài), kèm "+n sản phẩm" khi đơn có nhiều sản phẩm.</summary>
         private static string Title(EtsyReceipt receipt)
         {
             if (receipt.Items.Count == 0)

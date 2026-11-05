@@ -41,8 +41,7 @@ namespace Fin.Service.Finance.UseCases.Etsy.Queries.Handlers
             }
 
             var receipts = await _etsyClient.GetPaidReceiptsAsync(from, to, cancellationToken);
-            var rates = await FxRateBook.LoadAsync(_unitOfWork, cancellationToken);
-            var orders = receipts.Select(r => EtsyOrderMapper.Map(r, rates, _options.CurrentValue.EuVatPercent)).ToList();
+            var orders = receipts.Select(r => EtsyOrderMapper.Map(r, _options.CurrentValue.EuVatPercent)).ToList();
             var existing = await _unitOfWork.LedgerEntryRepository.GetExistingOrderCodesAsync(
                 SalesValues.ChannelEtsy, orders.Select(o => o.ReceiptId).ToList(), cancellationToken);
             orders.ForEach(o => o.Imported = existing.Contains(o.ReceiptId));

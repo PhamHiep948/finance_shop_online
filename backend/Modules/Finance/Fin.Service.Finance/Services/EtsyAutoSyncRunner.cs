@@ -169,12 +169,10 @@ namespace Fin.Service.Finance.Services
                 var to = DateOnly.FromDateTime(LocalNow);
                 var from = to.AddDays(-Math.Clamp(State.LookbackDays, 1, MaxLookbackDays));
                 using var scope = _scopeFactory.CreateScope();
-                var unitOfWork = scope.ServiceProvider.GetRequiredService<IFinanceUnitOfWork>();
                 var importer = scope.ServiceProvider.GetRequiredService<EtsyOrderImporter>();
 
                 var receipts = await _etsyClient.GetPaidReceiptsAsync(from, to, cancellationToken);
-                var rates = await FxRateBook.LoadAsync(unitOfWork, cancellationToken);
-                var orders = receipts.Select(r => EtsyOrderMapper.Map(r, rates, _options.CurrentValue.EuVatPercent)).ToList();
+                var orders = receipts.Select(r => EtsyOrderMapper.Map(r, _options.CurrentValue.EuVatPercent)).ToList();
                 var result = await importer.ImportAsync(orders, "Tự động đồng bộ từ Etsy", cancellationToken);
 
                 State.LastImported = result.Imported;
