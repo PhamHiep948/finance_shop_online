@@ -166,12 +166,19 @@ function costInputOf(form) {
   };
 }
 
-/** Dòng "Lưu bằng" trong panel chi tiết: loại tiền lúc nhập và số gốc khi đang xem bằng loại tiền khác. */
-function storedCurrencyHtml(rec) {
+/**
+ * Dòng "Lưu bằng" trong panel chi tiết. `editable` = ô chọn USD / EUR giống ô trong form (đổi là lưu ngay, các số giữ
+ * nguyên, chỉ đổi loại tiền); không thì chỉ hiện chữ. Đang xem bằng loại tiền khác thì kèm số gốc theo loại tiền đã lưu.
+ */
+function storedCurrencyRow(rec, editable) {
   const total = rec.orig?.amountAfterTax ?? afterTaxOf(rec);
-  return rec.currency === store.ccy
-    ? `<b>${esc(rec.currency)}</b>`
-    : `<b>${esc(rec.currency)}</b> <span class="muted">· số gốc ${esc(fmtCcy(total, rec.currency))} (đang xem quy đổi sang ${esc(store.ccy)})</span>`;
+  const original = rec.currency === store.ccy ? "" : `Số gốc ${fmtCcy(total, rec.currency)} (đang xem quy đổi sang ${store.ccy}).`;
+  if (!editable) {
+    return drRow("euro", "Lưu bằng", `<b>${esc(rec.currency)}</b>${original ? ` <span class="muted">· ${esc(original)}</span>` : ""}`);
+  }
+  return drInput("euro", "Lưu bằng",
+    `<select data-action="set-currency" translate="no">${optionsHtml([["USD", "USD ($)"], ["EUR", "EUR (€)"]], rec.currency)}</select>`,
+    { hint: esc(original) });
 }
 
 /** Danh sách gợi ý cho ô "Nhóm sản phẩm" (gõ tên mới được, lưu sẽ tự thêm nhóm). */
@@ -474,6 +481,7 @@ function recordDetailHtml(kind, rec, att, nav, animate) {
   const canEdit = !locked && !fromEtsy;
   const ed = (field, required = false) => ({ edit: canEdit ? field : "", required });
   const edGroup = { edit: !locked ? "categoryId" : "" };
+  const edMoney = (field, required = false) => ({ edit: !locked ? field : "", required });
   const basic = isIncome
     ? [
         drRow("file-text", "Tên sản phẩm", `<span translate="no">${esc(rec.description)}</span>`, "", ed("description", true)),
@@ -509,19 +517,19 @@ function recordDetailHtml(kind, rec, att, nav, animate) {
   const money2 = (v) => esc(money(v, store.ccy, date));
   const finance = isIncome
     ? [
-        drRow("euro", "Lưu bằng", storedCurrencyHtml(rec), "", ed("currency")),
-        drRow("circle-dollar-sign", "Giá bán", item ? `${money2(item.value)}${autoTag(item)}` : dash, "", ed("itemTotal")),
-        drRow("tags", "Giảm giá", disc ? `<span class="minus">− ${money2(disc)}</span>${rec.discountCode ? ` <span class="muted" translate="no">(${esc(rec.discountCode)})</span>` : ""}${autoTag(discInfo)}` : dash, "", ed("discountAmount")),
+        storedCurrencyRow(rec, !locked),
+        drRow("circle-dollar-sign", "Giá bán", item ? `${money2(item.value)}${autoTag(item)}` : dash, "", edMoney("itemTotal")),
+        drRow("tags", "Giảm giá", disc ? `<span class="minus">− ${money2(disc)}</span>${rec.discountCode ? ` <span class="muted" translate="no">(${esc(rec.discountCode)})</span>` : ""}${autoTag(discInfo)}` : dash, "", edMoney("discountAmount")),
         drRow("circle-dollar-sign", "Thành tiền", subtotal != null ? `${money2(subtotal)} <span class="muted">(giá bán − giảm giá)</span>` : dash),
-        drRow("truck", "Vận chuyển", ship ? money2(ship) : dash, "", ed("shippingAmount")),
-        drRow("circle-dollar-sign", "Trước thuế", money2(amount), "", ed("amount", true)),
-        drRow("percent", `Thuế (${pctLabel(rec.taxPercent)})`, money2(taxAmt), "", ed("taxPercent")),
+        drRow("truck", "Vận chuyển", ship ? money2(ship) : dash, "", edMoney("shippingAmount")),
+        drRow("circle-dollar-sign", "Trước thuế", money2(amount), "", edMoney("amount", true)),
+        drRow("percent", `Thuế (${pctLabel(rec.taxPercent)})`, money2(taxAmt), "", edMoney("taxPercent")),
         drRow("receipt", "Tổng thu", `<b class="plus">${money2(total)}</b> <span class="muted">≈ ${esc(money(total, other, date))}</span>`, "is-total income"),
       ]
     : [
-        drRow("euro", "Lưu bằng", storedCurrencyHtml(rec), "", ed("currency")),
-        drRow("circle-dollar-sign", "Trước thuế", money2(amount), "", ed("amount", true)),
-        drRow("percent", `Thuế (${pctLabel(rec.taxPercent)})`, money2(taxAmt), "", ed("taxPercent")),
+        storedCurrencyRow(rec, !locked),
+        drRow("circle-dollar-sign", "Trước thuế", money2(amount), "", edMoney("amount", true)),
+        drRow("percent", `Thuế (${pctLabel(rec.taxPercent)})`, money2(taxAmt), "", edMoney("taxPercent")),
         drRow("receipt", "Tổng thanh toán", `<b class="minus">${money2(total)}</b> <span class="muted">≈ ${esc(money(total, other, date))}</span>`, "is-total expense"),
       ];
 
@@ -552,7 +560,7 @@ function recordDetailHtml(kind, rec, att, nav, animate) {
             ${store.lock.enabled ? drRow(locked ? "lock" : "lock-open", "Khóa sổ", locked
               ? `<span class="lock-text locked">Đã khóa sổ ${esc(periodName(date).toLowerCase())}</span>`
               : `<span class="lock-text open">Đang mở · sửa được đến hết ${esc(dmy(lastEditableDay(date)))}</span>`) : ""}
-            ${fromEtsy ? drRow("store", "Nguồn", '<span class="lock-text locked">Nhập từ Etsy · chỉ sửa được nhóm sản phẩm và tiền xưởng / ship</span>') : ""}
+            ${fromEtsy ? drRow("store", "Nguồn", '<span class="lock-text locked">Nhập từ Etsy · chỉ sửa được nhóm sản phẩm, số tiền, loại tiền và tiền xưởng / ship</span>') : ""}
             ${isEtsyAds(rec) ? drRow("store", "Nguồn", '<span class="lock-text open">Phí quảng cáo nhập từ Etsy · sửa được, Lịch sử giữ số Etsy ban đầu</span>') : ""}
             ${drRow("clock", "Tạo lúc", esc(when(rec.createdAt)))}
             ${rec.updatedAt && rec.updatedAt !== rec.createdAt ? drRow("pencil", "Cập nhật", esc(when(rec.updatedAt))) : ""}
@@ -560,7 +568,7 @@ function recordDetailHtml(kind, rec, att, nav, animate) {
         </section>
         <section class="dr-section">
           <h4>Thông tin chi tiết</h4>
-          <p class="dr-edit-hint muted">${canEdit ? "Nhấp đúp vào ô để sửa nhanh · " : isIncome && !locked ? "Nhấp đúp vào nhóm sản phẩm để sửa · " : ""}<span class="req">*</span> là trường bắt buộc</p>
+          <p class="dr-edit-hint muted">${canEdit ? "Nhấp đúp vào ô để sửa nhanh · " : isIncome && !locked ? "Nhấp đúp vào nhóm sản phẩm hoặc số tiền để sửa · " : ""}<span class="req">*</span> là trường bắt buộc</p>
           <div class="dr-rows">${basic.join("")}</div>
         </section>
         <section class="dr-section">
@@ -1659,6 +1667,11 @@ function createRecordsPage(kind) {
     if (t.classList.contains("date-text")) return;
     if (t.dataset.action === "ccy") { setCcy(t.value); return; }
     if (t.name === "currency" && t.closest("form.record-form")) { refreshCcyLabels(t.form, "data-ccy-label", t.value); return; }
+    if (t.dataset.action === "set-currency") {
+      const rec = list().find((x) => x.id === s.viewId);
+      if (rec) commitEdit(rec, "currency", t.value);
+      return;
+    }
     if (t.name === "costCurrency") {
       refreshCcyLabels(t.form, "data-cost-ccy-label", t.value);
       refreshCostSplit(t.form);
@@ -1830,7 +1843,6 @@ function createRecordsPage(kind) {
       case "originScope": return `<select class="cell-editor">${optionsHtml([["", "—"], ...SCOPES.map((x) => [x.id, x.name])], r.originScope)}</select>`;
       case "productQty": return `<input class="cell-editor" type="number" min="1" step="1" value="${v}" />`;
       case "taxPercent": return num('max="100" placeholder="%"');
-      case "currency": return `<select class="cell-editor" translate="no">${optionsHtml([["USD", "USD ($)"], ["EUR", "EUR (€)"]], r.currency)}</select>`;
       case "note": return `<textarea class="cell-editor" rows="3">${v}</textarea>`;
       default:
         return MONEY_FIELDS.includes(field) || field === "cost"
@@ -1841,13 +1853,14 @@ function createRecordsPage(kind) {
 
   /**
    * Lý do không sửa nhanh được trường `field` của khoản `r` (chuỗi rỗng = sửa được).
-   * Tiền xưởng / ship sửa được cả với đơn Etsy (backend kiểm tra khóa sổ theo ngày chi); đơn Etsy chỉ sửa được
-   * nhóm sản phẩm vì Etsy không có thông tin này.
+   * Tiền xưởng / ship sửa được cả với đơn Etsy (backend kiểm tra khóa sổ theo ngày chi). Đơn Etsy chỉ sửa được
+   * số tiền, % thuế và nhóm sản phẩm (Etsy không có nhóm sản phẩm); tên, ngày, mã đơn… giữ đúng như Etsy.
    */
   function editBlock(r, field) {
     if (!field) return "Cột này tự tính, không sửa trực tiếp được.";
     if (field === "cost") return "";
-    if (isEtsyLocked(r) && !(isIncome && field === "categoryId")) return ETSY_READONLY;
+    const etsyEditable = MONEY_FIELDS.includes(field) || field === "taxPercent" || (isIncome && field === "categoryId");
+    if (isEtsyLocked(r) && !etsyEditable) return ETSY_READONLY;
     if (isLocked(r[dateKey])) return lockMessage(r[dateKey]);
     return "";
   }

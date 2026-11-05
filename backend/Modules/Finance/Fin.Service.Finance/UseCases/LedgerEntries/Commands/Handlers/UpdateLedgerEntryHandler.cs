@@ -8,6 +8,7 @@ using MediatR;
 
 namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
 {
+    /// <summary>Sửa một khoản thu / khoản chi, có kiểm tra danh mục, khóa sổ và ghi lịch sử chỉnh sửa.</summary>
     public sealed class UpdateLedgerEntryHandler : IRequestHandler<UpdateLedgerEntryCommand, Response<LedgerEntryResponse>>
     {
         private readonly IFinanceUnitOfWork _unitOfWork;
@@ -21,10 +22,17 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
             _auditTrail = auditTrail;
         }
 
+        /// <summary>
+        /// Lưu thay đổi của khoản. Khoản thu được để trống nhóm sản phẩm, khoản chi thì phải có loại chi. Không sửa được
+        /// khoản thuộc kỳ đã khóa sổ, cũng không được chuyển khoản vào kỳ đã khóa.
+        /// Đơn Etsy là dữ liệu gốc: chỉ sửa được nhóm sản phẩm (Etsy không có), số tiền và loại tiền; tên, ngày, mã đơn…
+        /// giữ đúng như Etsy.
+        /// Phí quảng cáo Etsy sửa được như khoản chi tay nhưng giữ mã tháng, kênh bán và số Etsy đã ghi nhớ, để tháng đó
+        /// vẫn được coi là đã nhập và không bị nhập lại. Nguồn và liên kết với khoản thu không nằm trong form nên giữ nguyên.
+        /// </summary>
         public async Task<Response<LedgerEntryResponse>> Handle(UpdateLedgerEntryCommand request, CancellationToken cancellationToken)
         {
             var payload = request.Payload;
-            // Only an income may be left without a product group; an expense always needs its category.
             if (payload.CategoryId is not { } categoryId
                     ? request.Kind != LedgerKinds.Income
                     : !await _unitOfWork.CategoryRepository.ExistsAsync(categoryId, request.Kind, cancellationToken))
@@ -37,17 +45,12 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
             {
                 return Response<LedgerEntryResponse>.Fail(ErrorCodeEnum.LED_ERR_001);
             }
-            // Neither an entry of a locked period may change, nor may an entry be moved into a locked period.
             if ((_periodLock.Check(entry.Date) ?? _periodLock.Check(payload.Date)) is { } locked)
             {
                 return Response<LedgerEntryResponse>.Fail(ErrorCodeEnum.COM_ERR_001, locked);
             }
 
             var before = (await _unitOfWork.LedgerEntryRepository.GetResponseAsync(request.Kind, entry.Id, cancellationToken))!;
-            // An Etsy order is source data: only its product group, which Etsy does not provide, may be set by hand.
-            // The monthly Etsy ad spend may be corrected like a manual expense, but keeps its code and channel so the
-            // month is still known as imported and never comes in twice.
-            // Source and the link to an income are not part of the form, so they stay untouched here.
             if (entry.IsEtsyAds)
             {
                 var (orderCode, salesChannel, etsyAmount, etsyCurrency) = (entry.OrderCode, entry.SalesChannel, entry.Details.EtsyAmount, entry.Details.EtsyCurrency);
@@ -58,6 +61,7 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
             else if (entry.IsFromEtsy)
             {
                 entry.CategoryId = payload.CategoryId;
+                LedgerEntryAssembler.ApplyMoney(entry, payload);
             }
             else
             {

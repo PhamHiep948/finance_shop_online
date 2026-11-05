@@ -55,6 +55,52 @@ namespace Fin.Tests.Unit.Services
                 .Handle(new UpdateLedgerEntryCommand { Kind = entry.Kind, Id = entry.Id, Payload = payload }, CancellationToken.None);
         }
 
+        // ---- Đổi loại tiền của đơn Etsy
+
+        [Fact]
+        public async Task An_etsy_order_can_switch_its_stored_currency_keeping_the_numbers()
+        {
+            var order = new LedgerEntry
+            {
+                Kind = LedgerKinds.Income, Date = new DateOnly(2026, 9, 12), Description = "Lilie", OrderCode = "4136894034",
+                SalesChannel = SalesValues.ChannelEtsy, Source = EntrySources.Etsy, CurrencyCode = "USD",
+            };
+            order.SetAmounts(21.88m, 19m, 26.04m);
+            _unitOfWork.WithEntry(order);
+
+            var result = await UpdateAsync(order, new LedgerEntryRequest
+            {
+                Date = "2026-09-12", Description = "Đổi tên không được", Amount = 21.88m, TaxPercent = 19m, CurrencyCode = "EUR",
+            });
+
+            Assert.True(result.Succeeded);
+            Assert.Equal(("EUR", 21.88m, 26.04m, "Lilie"), (order.CurrencyCode, order.Amount, order.AmountAfterTax, order.Description));
+        }
+
+        [Fact]
+        public async Task The_amounts_of_an_etsy_order_can_be_corrected_but_not_its_name_or_date()
+        {
+            var order = new LedgerEntry
+            {
+                Kind = LedgerKinds.Income, Date = new DateOnly(2026, 9, 12), Description = "Lilie", OrderCode = "4136894034",
+                SalesChannel = SalesValues.ChannelEtsy, Source = EntrySources.Etsy, CurrencyCode = "EUR",
+                Details = new LedgerDetails { ReferenceCode = "ETSY-4136894034", Note = "Nhập từ Etsy (DE, EUR)." },
+            };
+            order.SetAmounts(21.88m, 19m, 26.04m);
+            _unitOfWork.WithEntry(order);
+
+            var result = await UpdateAsync(order, new LedgerEntryRequest
+            {
+                Date = "2026-01-01", Description = "Đổi tên", Amount = 20m, TaxPercent = 19m, CurrencyCode = "EUR",
+                ItemTotal = 25m, ShippingAmount = 3.8m, Note = "Không đổi được",
+            });
+
+            Assert.True(result.Succeeded);
+            Assert.Equal((20m, 23.8m, 25m, 3.8m), (order.Amount, order.AmountAfterTax, order.Details.ItemTotal, order.Details.ShippingAmount));
+            Assert.Equal(("Lilie", new DateOnly(2026, 9, 12), "4136894034"), (order.Description, order.Date, order.OrderCode));
+            Assert.Equal(("ETSY-4136894034", "Nhập từ Etsy (DE, EUR)."), (order.Details.ReferenceCode, order.Details.Note));
+        }
+
         // ---- Sửa khoản quảng cáo Etsy
 
         [Fact]
@@ -108,7 +154,7 @@ namespace Fin.Tests.Unit.Services
         }
 
         [Fact]
-        public async Task An_etsy_order_still_only_takes_its_product_group()
+        public async Task An_etsy_order_takes_its_product_group_but_keeps_its_name()
         {
             var order = new LedgerEntry
             {
@@ -119,7 +165,7 @@ namespace Fin.Tests.Unit.Services
             _unitOfWork.WithEntry(order);
             var group = _unitOfWork.Categories.Single(c => c.Name == "Bán hàng").Id;
 
-            await UpdateAsync(order, new LedgerEntryRequest { Date = "2026-09-03", Description = "Đổi tên", CategoryId = group, Amount = 999m });
+            await UpdateAsync(order, new LedgerEntryRequest { Date = "2026-09-03", Description = "Đổi tên", CategoryId = group, Amount = 20m });
 
             Assert.Equal((group, 20m, "Lilie"), (order.CategoryId, order.Amount, order.Description));
         }

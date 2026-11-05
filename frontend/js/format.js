@@ -195,7 +195,7 @@ function usd(n) {
 const pctLabel = (n) => `${Number(n) || 0}%`;
 const dmy = (iso) => (iso || "").split("-").reverse().join("/");
 const sourceLabel = (v) => (v === "ETSY" ? "Etsy" : v === "EXCEL_IMPORT" ? "Excel" : v === "LINKED" ? "Từ khoản thu" : "Nhập tay");
-const ETSY_READONLY = "Khoản nhập từ Etsy không được sửa, chỉ có thể xóa.";
+const ETSY_READONLY = "Đơn nhập từ Etsy chỉ sửa được số tiền, loại tiền và nhóm sản phẩm (nhấp đúp vào ô trong panel chi tiết).";
 /** Khoản chi phí quảng cáo Etsy của một tháng (mã ADS-yyyy-MM): nhập từ Etsy nhưng sửa được số tiền. */
 const isEtsyAds = (r) => r?.source === "ETSY" && String(r.orderCode || "").startsWith("ADS-");
 /** Khoản Etsy bị khóa sửa (đơn hàng); phí quảng cáo thì không. */
