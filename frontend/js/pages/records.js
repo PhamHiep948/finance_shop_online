@@ -9,6 +9,7 @@ function loadPageSize(kind) {
   return Number.isInteger(n) && n >= 1 ? Math.min(n, MAX_PAGE_SIZE) : PAGE_SIZE;
 }
 
+/** HTML một ô tổng phía trên danh sách (nhãn, giá trị, mức thay đổi). */
 function kpiCardHtml({ label, value, delta }) {
   const deltaCls = String(delta || "").startsWith("-") ? "down" : "up";
   return `
@@ -43,7 +44,9 @@ function drInput(iconName, label, control, { required = false, hint = "", cls = 
 }
 
 const dash = '<span class="muted">—</span>';
+/** Chữ "Trong EU" / "Ngoài EU" có màu theo khu vực bán; không có thì gạch ngang. */
 const regionText = (v) => (v ? `<span class="tag-text ${v === "IN_EU" ? "tx-eu" : "tx-out"}">${saleRegionLabel(v)}</span>` : dash);
+/** Tên phạm vi nguồn của khoản chi có màu; không có thì gạch ngang. */
 const scopeText = (v) => (v ? `<span class="cat-text ${catTone(Number(v) || (v === "INTERNATIONAL" ? 2 : 1))}">${esc(originScopeLabel(v))}</span>` : dash);
 
 /**
@@ -56,22 +59,30 @@ function splitPaid(paid, pct) {
   return { before, tax: round2(Number(paid) - before) };
 }
 
-/** Ô nhập tiền xưởng / tiền ship của khoản thu (dùng trong form thêm/sửa và trong panel chi tiết). */
+/**
+ * HTML các ô nhập tiền xưởng / tiền ship của khoản thu (dùng trong form thêm / sửa và trong panel chi tiết).
+ * Số đã trả hiện đúng số và loại tiền đã lưu; khoản mới mặc định theo loại tiền đang xem.
+ */
 function costFieldsHtml(rec) {
-  const { ccy } = store;
   const inEu = rec?.saleRegion === "IN_EU";
   const linked = rec?.id ? costOf(rec, store.expenses).items[0] : null;
   const date = linked?.expenseDate || rec?.incomeDate || store.lock.today;
-  const paid = linked ? toDisplay(afterTaxOf(linked), ccy, date) : "";
+  const ccy = linked?.currency || store.ccy;
+  const paid = linked ? linked.orig.amountAfterTax : "";
   const tax = linked ? valNum(linked.taxPercent) : inEu ? 19 : "";
   const split = splitPaid(paid, tax);
   const computed = (name, value) => `<input name="${name}" type="number" step="0.01" readonly tabindex="-1" class="is-computed" value="${esc(value)}" />`;
   return [
-    drInput("truck", `Số tiền đã trả (${ccy})`,
+    drInput("euro", "Lưu bằng", currencySelectHtml("costCurrency", ccy),
+      { hint: "Loại tiền của số tiền đã trả; lưu đúng số đã gõ, không quy đổi." }),
+    drInput("truck", ccyLabel("Số tiền đã trả", ccy, "data-cost-ccy-label"),
       `<input name="costAmount" type="number" step="0.01" min="0" value="${esc(paid)}" placeholder="0.00" />`, { hint: "Số tiền thực trả, đã gồm thuế." }),
     drInput("percent", "% thuế trong số tiền", `<input name="costTax" type="number" step="0.01" min="0" max="100" value="${esc(tax)}" placeholder="0" />`),
-    drInput("circle-dollar-sign", `Trước thuế (${ccy})`, computed("costBefore", split.before), { cls: "is-readonly", hint: "Tự tính: đã trả ÷ (1 + % thuế)." }),
-    drInput("receipt", `Tiền thuế (${ccy})`, computed("costTaxAmount", split.tax), { cls: "is-readonly" }),
+    drInput("circle-dollar-sign", ccyLabel("Trước thuế", ccy, "data-cost-ccy-label"), computed("costBefore", split.before), { cls: "is-readonly", hint: "Tự tính: đã trả ÷ (1 + % thuế)." }),
+    drInput("receipt", ccyLabel("Tiền thuế", ccy, "data-cost-ccy-label"), computed("costTaxAmount", split.tax), { cls: "is-readonly" }),
+    drInput("tags", "Loại chi",
+      `<select name="costCategory">${optionsHtml([...(linked ? [] : [["", "Tự động: Tiền xưởng (ngoài EU) / Phí ship (trong EU)"]]), ...EXPENSE_CATEGORIES.map((c) => [c.id, c.name])], linked?.categoryId)}</select>`,
+      { hint: "Loại chi của khoản chi tự thêm (thêm / sửa loại chi ở trang Khoản chi)." }),
     drInput("user", "Bên nhận", `<input name="costPayee" value="${esc(linked?.recipient || "")}" placeholder="${inEu ? "Hãng vận chuyển" : "Xưởng sản xuất"}" />`),
     drInput("map-pin", "Phạm vi",
       `<select name="costScope">${optionsHtml([["", "—"], ...SCOPES.map((x) => [x.id, x.name])], linked?.originScope)}</select>`),
@@ -89,14 +100,37 @@ function refreshCostSplit(form) {
   refreshCostSummary(form, split);
 }
 
-/** Panel chi tiết: các dòng tóm tắt và lợi nhuận phía trên đổi ngay theo số đang gõ, chưa cần bấm Lưu. */
+/** Ô chọn loại tiền lưu (USD / EUR) của một khoản. */
+function currencySelectHtml(name, value) {
+  return `<select name="${name}" translate="no">${optionsHtml([["USD", "USD ($)"], ["EUR", "EUR (€)"]], value)}</select>`;
+}
+
+/**
+ * Nhãn ô số tiền kèm loại tiền, ví dụ "Trước thuế (EUR)". Cả nhãn là một đoạn chữ (để trang Bản dịch dịch nguyên
+ * câu); chọn lại ô "Lưu bằng" thì refreshCcyLabels viết lại nhãn theo loại tiền mới.
+ */
+function ccyLabel(text, ccy, attr = "data-ccy-label") {
+  return `<span ${attr}="${esc(text)}">${esc(text)} (${ccy})</span>`;
+}
+/** Viết lại nhãn các ô số tiền (đánh dấu bằng thuộc tính `attr`) theo loại tiền `ccy` mới chọn. */
+function refreshCcyLabels(form, attr, ccy) {
+  form.querySelectorAll(`[${attr}]`).forEach((el) => { el.textContent = `${el.getAttribute(attr)} (${ccy})`; });
+}
+
+/**
+ * Panel chi tiết: cập nhật ngay các dòng tóm tắt tiền xưởng / ship và lợi nhuận theo số đang gõ, chưa cần bấm Lưu.
+ * Số đang gõ theo loại tiền chọn ở ô "Lưu bằng"; các dòng tóm tắt hiện theo loại tiền đang xem.
+ */
 function refreshCostSummary(form, split) {
   const section = form.closest(".dr-section");
   const incomeRow = section?.querySelector("[data-income-before]");
   if (!incomeRow) return;
   const { ccy } = store;
-  const before = Number(split.before) || 0;
-  const tax = Number(split.tax) || 0;
+  const date = form.elements.costDate.value;
+  const typed = form.elements.costCurrency.value;
+  const shown = (v) => round2(toDisplay(usdOf(Number(v) || 0, typed, date), ccy, date));
+  const before = shown(split.before);
+  const tax = shown(split.tax);
   const set = (key, text) => { const el = section.querySelector(`[data-cost-live="${key}"]`); if (el) el.textContent = text; };
   set("before", fmtCcy(before, ccy));
   set("tax", fmtCcy(tax, ccy));
@@ -111,31 +145,25 @@ function refreshCostSummary(form, split) {
 }
 
 /** Các ô người dùng gõ được trong form tiền xưởng / tiền ship (các ô còn lại tự tính). */
-const COST_DRAFT_FIELDS = ["costAmount", "costTax", "costPayee", "costScope", "costInvoiceId", "costDate"];
+const COST_DRAFT_FIELDS = ["costCurrency", "costAmount", "costTax", "costCategory", "costPayee", "costScope", "costInvoiceId", "costDate"];
 
-/** Đọc các ô tiền xưởng / tiền ship từ form (số tiền theo loại tiền đang gõ `ccy`); null nếu form không có các ô này. */
-function costInputOf(form, ccy) {
+/**
+ * Đọc các ô tiền xưởng / tiền ship từ form thành dữ liệu gửi backend; null nếu form không có các ô này.
+ * Số tiền theo loại tiền chọn ở ô "Lưu bằng"; loại chi để trống = tự chọn theo khu vực bán.
+ */
+function costInputOf(form) {
   if (!form.elements.costAmount) return null;
   const date = form.elements.costDate.value;
   return {
     amount: typedMoney(form.elements.costAmount.value) ?? 0,
-    currencyCode: ccy,
+    currencyCode: currencyOf(form.elements.costCurrency.value),
+    categoryId: Number(form.elements.costCategory.value) || null,
     taxPercent: Number(form.elements.costTax.value || 0),
     invoiceId: form.elements.costInvoiceId.value.trim(),
     payee: form.elements.costPayee.value.trim(),
     originScope: form.elements.costScope.value,
     date,
   };
-}
-
-/**
- * Số tiền xưởng / ship không đổi (chỉ sửa bên nhận, ngày…) mà đang xem bằng loại tiền khác loại đã lưu:
- * giữ số và loại tiền đã lưu, không lưu số quy đổi.
- */
-function keepCostMoney(linked, cost) {
-  if (!linked || !cost || cost.currencyCode === linked.currency) return cost;
-  const shown = toDisplay(afterTaxOf(linked), cost.currencyCode, linked.expenseDate);
-  return sameMoney(cost.amount, shown) ? { ...cost, amount: linked.orig.amountAfterTax, currencyCode: linked.currency } : cost;
 }
 
 /** Dòng "Lưu bằng" trong panel chi tiết: loại tiền lúc nhập và số gốc khi đang xem bằng loại tiền khác. */
@@ -166,6 +194,7 @@ async function resolveProductGroup(name) {
 
 // ---------------------------------------------------------------- Form thêm / sửa
 
+/** Trạng thái mở / thu gọn đã nhớ của các mục trong form (đọc từ localStorage). */
 function sectionPrefs() {
   try {
     return JSON.parse(localStorage.getItem("fm_form_sections") || "{}") || {};
@@ -192,6 +221,7 @@ function formSectionHtml({ id, title, sub, defaultOpen, body }) {
     </div>`;
 }
 
+/** Mở / thu gọn một mục trong form khi bấm nút ở đầu mục, và nhớ lại lựa chọn. */
 function toggleFormSection(btn) {
   const section = btn.closest(".form-section");
   const id = section.dataset.section;
@@ -206,8 +236,13 @@ function toggleFormSection(btn) {
   localStorage.setItem("fm_form_sections", JSON.stringify(p));
 }
 
+/**
+ * HTML form thêm / sửa khoản thu hoặc khoản chi (`rec` = null khi thêm mới).
+ * Số tiền trong form theo loại tiền chọn ở ô "Lưu bằng": khoản đã có hiện đúng số và loại tiền đã lưu,
+ * khoản mới mặc định theo loại tiền đang xem.
+ */
 function recordFormHtml(kind, rec, animate) {
-  const { ccy } = store;
+  const ccy = rec?.currency || store.ccy;
   const isIncome = kind === "income";
   const today = store.lock.today;
   const cats = isIncome ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
@@ -216,9 +251,9 @@ function recordFormHtml(kind, rec, animate) {
     ? { incomeDate: today, description: "", categoryId: null, amount: "", taxPercent: "", orderCode: "", saleRegion: "", productQty: "", unitPrice: "", itemTotal: "", discountAmount: "", discountCode: "", subtotal: "", shippingAmount: "", taxAmount: "", referenceCode: "", note: "" }
     : { expenseDate: today, description: "", categoryId: firstCat, amount: "", recipient: "", originScope: String(SCOPES[0]?.id ?? ""), invoiceId: "", taxPercent: "", note: "" });
   const dateName = isIncome ? "incomeDate" : "expenseDate";
-  // Số tiền hiển thị theo tỷ giá của tháng chứa ngày thu / ngày chi.
-  const disp = (v) => (v === 0 || v ? toDisplay(v, ccy, r[dateName]) : "");
-  const amount = r.amount === "" ? "" : toDisplay(r.amount, ccy, r[dateName]);
+  const money = (f) => (rec?.orig ? rec.orig[f] : r[f]);
+  const disp = (v) => (v === 0 || v ? v : "");
+  const amount = r.amount === "" ? "" : money("amount");
   const taxPercent = valNum(r.taxPercent);
   const after = amount === "" ? "" : afterTax(amount, taxPercent);
   const catOptions = optionsHtml(cats.map((c) => [c.id, c.name]), r.categoryId);
@@ -238,9 +273,11 @@ function recordFormHtml(kind, rec, animate) {
     drInput("file-text", isIncome ? "Tên sản phẩm" : "Nội dung",
       `<input name="description" required value="${esc(r.description)}"${isIncome ? ' placeholder="VD: Lily Flower"' : ""} />`, { required: true }),
     isIncome ? "" : drInput("user", "Bên nhận", `<input name="recipient" value="${esc(r.recipient)}" placeholder="Cửa hàng, nhà cung cấp…" />`),
-    drInput("circle-dollar-sign", `Trước thuế (${ccy})`, `<input name="amount" type="number" step="0.01" required value="${esc(amount)}" />`, { required: true }),
+    drInput("euro", "Lưu bằng", currencySelectHtml("currency", ccy),
+      { hint: "Loại tiền của các số tiền trong form; lưu đúng số đã gõ, không quy đổi." }),
+    drInput("circle-dollar-sign", ccyLabel("Trước thuế", ccy), `<input name="amount" type="number" step="0.01" required value="${esc(amount)}" />`, { required: true }),
     drInput("percent", "% thuế", `<input name="taxPercent" type="number" step="0.01" min="0" max="100" value="${esc(taxPercent)}" placeholder="0" />`),
-    drInput("receipt", `Sau thuế (${ccy})`,
+    drInput("receipt", ccyLabel("Sau thuế", ccy),
       `<input name="amountAfterTax" type="number" step="0.01" readonly tabindex="-1" class="is-computed" value="${esc(after)}" />`,
       { hint: "Tự tính từ số tiền trước thuế và % thuế.", cls: "is-readonly" }),
   ].join("");
@@ -253,21 +290,21 @@ function recordFormHtml(kind, rec, animate) {
           drInput("hash", "Mã đơn hàng", `<input name="orderCode" value="${esc(r.orderCode)}" placeholder="VD: 4154185113" />`),
           drInput("globe", "Khu vực bán", `<select name="saleRegion">${optionsHtml([["", "—"], ["IN_EU", "Trong EU"], ["OUTSIDE_EU", "Ngoài EU"]], r.saleRegion)}</select>`),
           drInput("package", "Số lượng", `<input name="productQty" type="number" min="1" step="1" value="${esc(r.productQty || "")}" />`),
-          drInput("circle-dollar-sign", `Đơn giá (${ccy})`, num("unitPrice", disp(r.unitPrice), 'placeholder="5.49" ')),
+          drInput("circle-dollar-sign", ccyLabel("Đơn giá", ccy), num("unitPrice", disp(money("unitPrice")), 'placeholder="5.49" ')),
         ].join(""),
       })
       + formSectionHtml({
         id: "income-fees", title: "Chi tiết phí", sub: "Giá bán, giảm giá, vận chuyển, thuế",
         defaultOpen: !!(r.itemTotal || r.discountAmount || r.discountCode || r.subtotal || r.shippingAmount || r.taxAmount),
         body: [
-          drInput("circle-dollar-sign", `Giá bán (${ccy})`, num("itemTotal", disp(r.itemTotal))),
-          drInput("tags", `Giảm giá (${ccy})`, num("discountAmount", disp(r.discountAmount))),
+          drInput("circle-dollar-sign", ccyLabel("Giá bán", ccy), num("itemTotal", disp(money("itemTotal")))),
+          drInput("tags", ccyLabel("Giảm giá", ccy), num("discountAmount", disp(money("discountAmount")))),
           drInput("hash", "Mã giảm giá", `<input name="discountCode" value="${esc(r.discountCode)}" placeholder="AGSALE43" translate="no" />`),
-          drInput("circle-dollar-sign", `Thành tiền (${ccy})`,
-            `<input name="subtotal" type="number" step="0.01" readonly tabindex="-1" class="is-computed" value="${esc(rec ? disp(subtotalOf(r)) : "")}" />`,
+          drInput("circle-dollar-sign", ccyLabel("Thành tiền", ccy),
+            `<input name="subtotal" type="number" step="0.01" readonly tabindex="-1" class="is-computed" value="${esc(rec ? disp(subtotalOf({ ...rec, ...rec.orig })) : "")}" />`,
             { hint: "Tự tính: giá bán − giảm giá.", cls: "is-readonly" }),
-          drInput("truck", `Vận chuyển (${ccy})`, num("shippingAmount", disp(r.shippingAmount))),
-          drInput("receipt", `Thuế (${ccy})`, num("taxAmount", disp(r.taxAmount))),
+          drInput("truck", ccyLabel("Vận chuyển", ccy), num("shippingAmount", disp(money("shippingAmount")))),
+          drInput("receipt", ccyLabel("Thuế", ccy), num("taxAmount", disp(money("taxAmount")))),
         ].join(""),
       })
       + formSectionHtml({
@@ -398,7 +435,11 @@ function linkedAttachmentsHtml(rec, att) {
 
 // ---------------------------------------------------------------- Panel chi tiết
 
-/** `nav` = { index, total } để hiện nút Trước / Sau trong danh sách đang lọc. */
+/**
+ * HTML panel chi tiết một khoản. `att` = chứng từ đính kèm; `nav` = { index, total } để hiện nút Trước / Sau
+ * trong danh sách đang lọc. Nhấp đúp vào một dòng để sửa nhanh (không sửa được khoản Etsy, trừ nhóm sản phẩm,
+ * và khoản thuộc kỳ đã khóa sổ). Số tiền hiện theo loại tiền đang xem; dòng tổng kèm số quy sang loại tiền còn lại.
+ */
 function recordDetailHtml(kind, rec, att, nav, animate) {
   const isIncome = kind === "income";
   const close = `<button class="drawer-close" type="button" aria-label="Đóng" data-action="close-view">${icon("x", 18)}</button>`;
@@ -430,10 +471,8 @@ function recordDetailHtml(kind, rec, att, nav, animate) {
   const fromEtsy = isEtsyLocked(rec);
   const editTitle = locked ? lockedTitle : fromEtsy ? ` title="${esc(ETSY_READONLY)}" disabled` : "";
 
-  // Nhấp đúp vào dòng để sửa nhanh (trừ khoản Etsy và khoản thuộc kỳ đã khóa); * = trường bắt buộc.
   const canEdit = !locked && !fromEtsy;
   const ed = (field, required = false) => ({ edit: canEdit ? field : "", required });
-  // Nhóm sản phẩm không có từ Etsy nên đơn Etsy vẫn sửa được ô này.
   const edGroup = { edit: !locked ? "categoryId" : "" };
   const basic = isIncome
     ? [
@@ -466,12 +505,11 @@ function recordDetailHtml(kind, rec, att, nav, animate) {
         drRow("sticky-note", "Ghi chú", rec.note ? `<span translate="no">${esc(rec.note)}</span>` : dash, "is-multiline", ed("note")),
       ];
 
-  // Số tiền theo loại tiền đang chọn (như ô sửa); dòng tổng kèm số quy sang loại tiền còn lại.
   const other = store.ccy === "EUR" ? "USD" : "EUR";
   const money2 = (v) => esc(money(v, store.ccy, date));
   const finance = isIncome
     ? [
-        drRow("euro", "Lưu bằng", storedCurrencyHtml(rec)),
+        drRow("euro", "Lưu bằng", storedCurrencyHtml(rec), "", ed("currency")),
         drRow("circle-dollar-sign", "Giá bán", item ? `${money2(item.value)}${autoTag(item)}` : dash, "", ed("itemTotal")),
         drRow("tags", "Giảm giá", disc ? `<span class="minus">− ${money2(disc)}</span>${rec.discountCode ? ` <span class="muted" translate="no">(${esc(rec.discountCode)})</span>` : ""}${autoTag(discInfo)}` : dash, "", ed("discountAmount")),
         drRow("circle-dollar-sign", "Thành tiền", subtotal != null ? `${money2(subtotal)} <span class="muted">(giá bán − giảm giá)</span>` : dash),
@@ -481,7 +519,7 @@ function recordDetailHtml(kind, rec, att, nav, animate) {
         drRow("receipt", "Tổng thu", `<b class="plus">${money2(total)}</b> <span class="muted">≈ ${esc(money(total, other, date))}</span>`, "is-total income"),
       ]
     : [
-        drRow("euro", "Lưu bằng", storedCurrencyHtml(rec)),
+        drRow("euro", "Lưu bằng", storedCurrencyHtml(rec), "", ed("currency")),
         drRow("circle-dollar-sign", "Trước thuế", money2(amount), "", ed("amount", true)),
         drRow("percent", `Thuế (${pctLabel(rec.taxPercent)})`, money2(taxAmt), "", ed("taxPercent")),
         drRow("receipt", "Tổng thanh toán", `<b class="minus">${money2(total)}</b> <span class="muted">≈ ${esc(money(total, other, date))}</span>`, "is-total expense"),
@@ -550,17 +588,19 @@ function recordDetailHtml(kind, rec, att, nav, animate) {
     </aside>`;
 }
 
-/** Mục "Tiền xưởng / Tiền ship" trong panel chi tiết khoản thu: sửa được ngay, kể cả đơn nhập từ Etsy. */
+/**
+ * Mục "Tiền xưởng / Tiền ship" trong panel chi tiết khoản thu: sửa được ngay, kể cả đơn nhập từ Etsy.
+ * Số tiền quy đổi một lần từ tổng USD (không cộng các số đã làm tròn) để hạn chế sai số.
+ * Lợi nhuận = trước thuế của đơn − tiền xưởng (ngoài EU) / tiền ship (trong EU) trước thuế, như file Excel.
+ */
 function costSectionHtml(rec) {
   const cost = costOf(rec, store.expenses);
   const linked = cost.items[0];
   const kindLabel = costKindLabel(rec);
   const date = rec.incomeDate;
-  // Quy đổi một lần từ số USD đã cộng (không cộng các số đã làm tròn theo EUR) để hạn chế sai số.
   const m = (v) => esc(money(v, store.ccy, date));
   const before = toDisplay(cost.before, store.ccy, linked?.expenseDate || date);
   const after = toDisplay(cost.total, store.ccy, linked?.expenseDate || date);
-  // Như Excel: tiền trước thuế của đơn − tiền xưởng (ngoài EU) / tiền ship (trong EU) trước thuế.
   const profit = profitOf(rec, store.expenses);
   return `
     <section class="dr-section">
@@ -589,6 +629,7 @@ function costSectionHtml(rec) {
 
 // ---------------------------------------------------------------- Trang danh sách
 
+/** Tạo trang danh sách khoản thu (`kind` = "income") hoặc khoản chi ("expense"): bảng, bộ lọc, form, panel chi tiết, Etsy. */
 function createRecordsPage(kind) {
   const isIncome = kind === "income";
   const basePath = isIncome ? "/incomes" : "/expenses";
@@ -596,12 +637,17 @@ function createRecordsPage(kind) {
   const defsById = Object.fromEntries(colDefs(kind).map((c) => [c.id, c]));
   let s = null;
 
+  /** Danh sách khoản của trang này. */
   const list = () => (isIncome ? store.incomes : store.expenses);
+  /** Danh mục của trang này: nhóm sản phẩm (khoản thu) hoặc loại chi (khoản chi). */
   const cats = () => (isIncome ? INCOME_CATEGORIES : EXPENSE_CATEGORIES);
 
+  /**
+   * Danh sách khoản theo bộ lọc và ô tìm kiếm đang chọn, mới nhất trước.
+   * Khoản thu tìm được cả theo ID hóa đơn của tiền xưởng / tiền ship gắn với nó (lưu ở khoản chi).
+   */
   function filtered() {
     const qq = s.q.toLowerCase().trim();
-    // Khoản thu tìm được cả theo ID hóa đơn tiền xưởng / tiền ship gắn với nó (lưu ở khoản chi).
     const costIds = {};
     if (isIncome && qq) {
       store.expenses.forEach((x) => {
@@ -625,11 +671,14 @@ function createRecordsPage(kind) {
     }).sort((a, b) => String(b[dateKey]).localeCompare(String(a[dateKey])) || b.id - a.id);
   }
 
-  /** 3 ô tổng theo đúng danh sách đang lọc (khoảng ngày, loại, nguồn, tìm kiếm…). */
+  /**
+   * Các ô tổng theo đúng danh sách đang lọc (khoảng ngày, loại, nguồn, tìm kiếm…).
+   * Xem bằng EUR thì từng khoản quy theo tỷ giá tháng của nó rồi mới cộng; lợi nhuận mỗi đơn chỉ làm tròn một lần
+   * (giống file Excel).
+   */
   function kpis() {
     const { ccy } = store;
     const rows = filtered();
-    // Đổi sang EUR thì quy từng khoản theo tỷ giá tháng của nó rồi mới cộng (giống Excel).
     const total = (pick) => rows.reduce((t, x) => t + toDisplay(pick(x), ccy, x[dateKey]), 0);
     const fmt = (v) => fmtCcy(v, ccy);
     const period = s.from || s.to
@@ -637,7 +686,6 @@ function createRecordsPage(kind) {
       : "Toàn bộ thời gian";
     const before = total((x) => x.amount);
     const after = total(afterTaxOf);
-    // Lợi nhuận: quy đổi từng đơn theo tỷ giá tháng của đơn, mỗi đơn chỉ làm tròn một lần.
     const profit = isIncome ? total((x) => profitOf(x, store.expenses)) : 0;
     return isIncome
       ? [
@@ -653,11 +701,16 @@ function createRecordsPage(kind) {
         ];
   }
 
+  /** HTML ô tiêu đề của cột `id` (cột số tiền canh phải). */
   function headerCell(id) {
     const numeric = ["qty", "amount", "taxPercent", "afterTax", "item", "discount", "subtotal", "ship", "tax", "fx", "costBefore", "costTax", "cost", "profit"].includes(id);
     return `<th data-col="${id}"${numeric ? ' class="amount"' : ""}>${esc(defsById[id]?.label)}</th>`;
   }
 
+  /**
+   * HTML một ô của bảng (cột `id`, dòng `r`). Số tiền quy đổi theo tỷ giá tháng của chính dòng đó.
+   * Cột tiền xưởng / ship: thuế = sau thuế − trước thuế (đã quy đổi) để 3 cột luôn khớp nhau.
+   */
   function bodyCell(id, r) {
     const { ccy } = store;
     const st = recStatus(r.id, kind, r);
@@ -665,7 +718,6 @@ function createRecordsPage(kind) {
     const srcCls = r.source === "ETSY" ? "src-etsy" : r.source === "EXCEL_IMPORT" ? "src-excel" : "src-manual";
     const sign = isIncome ? "plus" : "minus";
     const date = r[dateKey];
-    // Số tiền của dòng quy đổi theo tỷ giá tháng của chính dòng đó.
     const m = (v) => money(v, ccy, date);
     switch (id) {
       case "date": return `<td><span class="cell-date">${esc(dmy(r[dateKey]))}</span></td>`;
@@ -708,7 +760,6 @@ function createRecordsPage(kind) {
       case "ship": return `<td class="amount">${Number(r.shippingAmount) ? m(r.shippingAmount) : dash}</td>`;
       case "tax": return `<td class="amount">${m(Number(r.taxAmount) || 0)}</td>`;
       case "fx": {
-        // Tỷ giá tháng của khoản này + số sau thuế quy sang loại tiền còn lại.
         const manual = hasMonthlyRate(date);
         const other = ccy === "EUR" ? "USD" : "EUR";
         return `<td class="amount">
@@ -721,7 +772,6 @@ function createRecordsPage(kind) {
       case "cost": {
         const cost = costOf(r, store.expenses);
         if (!cost.items.length) return `<td class="amount">${dash}</td>`;
-        // Quy theo tỷ giá tháng của ngày chi; thuế = sau thuế − trước thuế (đã quy đổi) để 3 cột luôn khớp nhau.
         const d = cost.items[0].expenseDate || date;
         const before = toDisplay(cost.before, ccy, d);
         const after = toDisplay(cost.total, ccy, d);
@@ -789,14 +839,17 @@ function createRecordsPage(kind) {
       ${pager}`;
   }
 
-  /** Hàng bộ lọc: nhãn ở trên từng mục, lựa chọn ngắn dạng nút bấm (giống trang Báo cáo). */
+  /**
+   * Hàng bộ lọc: nhãn ở trên từng mục, lựa chọn ngắn dạng nút bấm (giống trang Báo cáo).
+   * Khoản chi có thêm nguồn "Etsy" khi có phí quảng cáo nhập từ Etsy.
+   */
   function filtersHtml() {
     const seg = (key, items) => `
       <div class="rpt-seg" role="group">
         ${items.map(([v, l]) => `<button type="button" class="rpt-seg-btn${String(s[key]) === String(v) ? " on" : ""}" data-action="set-filter" data-key="${key}" data-value="${esc(v)}">${esc(l)}</button>`).join("")}
       </div>`;
     const sources = [["", "Tất cả"], ["MANUAL", "Nhập tay"], isIncome ? ["ETSY", "Etsy"] : ["LINKED", "Từ khoản thu"]];
-    if (!isIncome && list().some((r) => r.source === "ETSY")) sources.push(["ETSY", "Etsy"]); // phí quảng cáo nhập từ Etsy
+    if (!isIncome && list().some((r) => r.source === "ETSY")) sources.push(["ETSY", "Etsy"]);
     if (list().some((r) => r.source === "EXCEL_IMPORT")) sources.push(["EXCEL_IMPORT", "Excel"]);
     return `
       <div class="record-filters">
@@ -824,6 +877,7 @@ function createRecordsPage(kind) {
       </div>`;
   }
 
+  /** Modal chọn cột hiển thị và thứ tự cột của bảng. */
   function colsModalHtml() {
     if (!s.colsOpen) return `<div class="modal-back" data-close="cols"></div>`;
     return `
@@ -862,9 +916,12 @@ function createRecordsPage(kind) {
 
   // ---------------------------------------------------------------- Đồng bộ Etsy
 
+  /**
+   * HTML trạng thái kết nối Etsy. Thiếu / sai key là việc cấu hình phía máy chủ nên không hiện lỗi kỹ thuật
+   * cho người dùng (chi tiết đã ghi ra console khi tải trạng thái).
+   */
   function etsyStatusHtml(st) {
     if (!st) return '<div class="etsy-status">Đang kiểm tra kết nối…</div>';
-    // Thiếu / sai key là việc cấu hình phía máy chủ: không hiện lỗi kỹ thuật cho người dùng (chi tiết ghi ra console khi tải trạng thái).
     if (!st.configured || st.keyError) {
       return `
         <div class="etsy-status">
@@ -888,6 +945,7 @@ function createRecordsPage(kind) {
       </div>`;
   }
 
+  /** Modal Etsy: trạng thái kết nối, đồng bộ tự động, tỷ giá theo tháng, danh sách đơn để chọn nhập. */
   function etsyModalHtml() {
     const e = s.etsy;
     if (!e.open) return `<div class="modal-back" data-close="etsy"></div>`;
@@ -983,6 +1041,7 @@ function createRecordsPage(kind) {
       </div>`;
   }
 
+  /** Bật / tắt đồng bộ Etsy tự động với chu kỳ `interval` phút. */
   async function saveEtsyAuto(enabled, interval) {
     try {
       store.etsyAuto = await setEtsyAutoSync(enabled, interval);
@@ -993,6 +1052,7 @@ function createRecordsPage(kind) {
     render(root);
   }
 
+  /** Chạy đồng bộ Etsy tự động ngay, báo số đơn mới, rồi cập nhật nhãn "Đã nhập" của danh sách đơn đang xem. */
   async function runEtsyAuto() {
     s.etsy.autoRunning = true;
     render(root);
@@ -1007,7 +1067,7 @@ function createRecordsPage(kind) {
       toast(err.message);
     }
     s.etsy.autoRunning = false;
-    if (s.etsy.orders) loadEtsyOrders(); // cập nhật nhãn "Đã nhập" trong danh sách đang xem
+    if (s.etsy.orders) loadEtsyOrders();
     else render(root);
   }
 
@@ -1056,6 +1116,10 @@ function createRecordsPage(kind) {
       </div>`;
   }
 
+  /**
+   * Lưu tỷ giá tự nhập của tháng `month` (để trống / không hợp lệ = xóa, dùng mặc định 1 EUR = 1 USD),
+   * rồi tính lại các đơn Etsy đang hiện theo tỷ giá mới.
+   */
   async function saveEtsyRate(month, value) {
     const rate = Number(value);
     try {
@@ -1073,11 +1137,11 @@ function createRecordsPage(kind) {
       return;
     }
     loadFx();
-    // Đơn đang hiện được tính lại theo tỷ giá mới.
     if (s.etsy.orders) loadEtsyOrders();
     else render(root);
   }
 
+  /** Mở modal Etsy (mặc định 30 ngày gần nhất) và tải trạng thái kết nối, tỷ giá, đồng bộ tự động. */
   async function openEtsy() {
     const today = new Date();
     const from = new Date(today);
@@ -1101,6 +1165,7 @@ function createRecordsPage(kind) {
     if (s.etsy.open) render(root);
   }
 
+  /** Tải đơn Etsy trong khoảng ngày đang chọn; tự chọn sẵn các đơn chưa nhập. */
   async function loadEtsyOrders() {
     s.etsy = { ...s.etsy, loading: true, error: "", orders: null, selected: new Set() };
     render(root);
@@ -1115,6 +1180,7 @@ function createRecordsPage(kind) {
     if (s.etsy.open) render(root);
   }
 
+  /** Nhập các đơn Etsy đã chọn thành khoản thu (bỏ qua đơn trùng) rồi tải lại dữ liệu. */
   async function importEtsy() {
     const picked = (s.etsy.orders || []).filter((o) => s.etsy.selected.has(o.receiptId));
     if (!picked.length) return;
@@ -1133,16 +1199,18 @@ function createRecordsPage(kind) {
     }
   }
 
-  // Modal quản lý dùng chung: loại thu / loại chi, hoặc phạm vi khoản chi (s.catsMode === "scope").
+  /** Modal quản lý dùng chung: danh sách, API và tên gọi của loại thu / loại chi, hoặc phạm vi khoản chi (catsMode = "scope"). */
   const catsList = () => (s.catsMode === "scope" ? SCOPES : cats());
   const catsApiKind = () => (s.catsMode === "scope" ? "scope" : kind);
   const catsLabel = () => (s.catsMode === "scope" ? "phạm vi" : isIncome ? "nhóm sản phẩm" : "loại chi");
 
-  /** Modal thêm / đổi tên / xóa loại thu, loại chi hoặc phạm vi khoản chi. */
+  /**
+   * Modal thêm / đổi tên / xóa loại thu, loại chi hoặc phạm vi khoản chi.
+   * Phạm vi xóa được cả khi đang dùng (backend để trống phạm vi của các khoản đó); loại thu / chi thì không.
+   */
   function catsModalHtml() {
     if (!s.catsOpen) return `<div class="modal-back" data-close="cats"></div>`;
     const label = catsLabel();
-    // Phạm vi xóa được cả khi đang dùng (backend để trống phạm vi của các khoản đó); loại thu / chi thì không.
     const freeDelete = s.catsMode === "scope";
     const rows = catsList().map((c) => {
       const used = Number(c.used) || 0;
@@ -1189,12 +1257,16 @@ function createRecordsPage(kind) {
   let root = null;
   let query = new URLSearchParams();
 
+  /**
+   * Form đang mở theo địa chỉ (?new=1 hoặc ?edit=id): trả về { rec } (rec = null khi thêm mới), không mở thì null.
+   * Đơn Etsy không có form sửa (phí quảng cáo Etsy thì có).
+   */
   function formTarget() {
     const formNew = query.get("new") === "1";
     const formEdit = query.get("edit");
     if (!formNew && !formEdit) return null;
     const rec = formEdit ? list().find((x) => x.id === Number(formEdit)) || null : null;
-    if (isEtsyLocked(rec)) return null; // Đơn Etsy không có form sửa (phí quảng cáo Etsy thì có).
+    if (isEtsyLocked(rec)) return null;
     return { rec };
   }
 
@@ -1207,13 +1279,17 @@ function createRecordsPage(kind) {
     if (backToId) openView(backToId, false);
   }
 
+  /**
+   * Vẽ toàn bộ trang vào `el` theo tham số địa chỉ `q`. Xử lý trước các tham số đặc biệt:
+   * ?etsy=connected / error (quay về từ trang đăng nhập Etsy), ?view=id (mở thẳng chi tiết một khoản).
+   * Mở form khác (thêm mới / sửa khoản khác) thì bỏ danh sách file đang chọn.
+   */
   function render(el, q) {
     root = el;
     if (q) query = q;
     const hasFilters = Boolean(s.cat || s.src || s.region || s.origin || s.from || s.to);
     const form = formTarget();
     const viewRec = s.viewId ? list().find((x) => x.id === s.viewId) : null;
-    // Quay về từ trang đăng nhập Etsy (?etsy=connected / ?etsy=error).
     const etsyResult = query.get("etsy");
     if (etsyResult) {
       toast(etsyResult === "connected" ? "Đã kết nối tài khoản Etsy" : "Kết nối Etsy không thành công");
@@ -1221,14 +1297,12 @@ function createRecordsPage(kind) {
       openEtsy();
       return;
     }
-    // Mở thẳng chi tiết một khoản (?view=id), ví dụ bấm từ khoản chi sang khoản thu gắn với nó.
     const viewParam = Number(query.get("view"));
     if (viewParam) {
       navigate(basePath, true);
       openView(viewParam);
       return;
     }
-    // Mở form khác (thêm mới / sửa bản ghi khác) thì bỏ danh sách file đang chọn.
     const formKey = form ? query.toString() : "";
     if (formKey !== s.formKey) { s.formKey = formKey; s.pendingFiles = []; s.formAnim = Boolean(form); }
 
@@ -1287,16 +1361,19 @@ function createRecordsPage(kind) {
     });
   }
 
+  /** Vẽ lại bảng và các ô tổng (khi lọc / tìm kiếm / đổi trang). */
   function refreshTable() {
     root.querySelector('[data-slot="table"]').innerHTML = tableHtml();
     root.querySelector('[data-slot="kpis"]').innerHTML = kpis().map(kpiCardHtml).join("");
   }
 
+  /** Vẽ lại danh sách file đang chọn để tải lên cùng form. */
   function refreshPending() {
     const slot = root.querySelector('[data-slot="pending"]');
     if (slot) slot.innerHTML = pendingFilesHtml(s.pendingFiles);
   }
 
+  /** Vẽ lại panel chi tiết của khoản đang xem, giữ nguyên tiền xưởng / ship đang gõ dở và chỗ đang cuộn tới. */
   function refreshDetail() {
     const slot = root.querySelector('[data-slot="detail"]');
     if (!slot || !s.viewId) return;
@@ -1306,31 +1383,35 @@ function createRecordsPage(kind) {
     restoreDetailScroll(scroll);
   }
 
-  // Tiền xưởng / ship đang gõ dở (chưa bấm Lưu) được giữ lại khi panel chi tiết vẽ lại: tải chứng từ lên,
-  // dữ liệu tải lại, sửa nhanh ô khác… Chỉ áp dụng cho đúng khoản đang xem và đúng loại tiền lúc gõ.
+  /**
+   * Nhớ tiền xưởng / ship đang gõ dở (chưa bấm Lưu) để không mất khi panel chi tiết vẽ lại
+   * (tải chứng từ lên, dữ liệu tải lại, sửa nhanh ô khác…). Chỉ áp dụng cho đúng khoản đang xem.
+   */
   function rememberCostDraft(form) {
     s.costDraft = {
       id: s.viewId,
-      ccy: store.ccy,
       values: Object.fromEntries(COST_DRAFT_FIELDS.map((name) => [name, form.elements[name]?.value ?? ""])),
     };
   }
+  /** Điền lại tiền xưởng / ship đang gõ dở vào form sau khi panel chi tiết vẽ lại. */
   function applyCostDraft() {
     const d = s.costDraft;
-    if (!d || d.id !== s.viewId || d.ccy !== store.ccy) return;
+    if (!d || d.id !== s.viewId) return;
     const form = root.querySelector('form[data-form="cost"]');
     if (!form) return;
     for (const [name, value] of Object.entries(d.values)) {
       if (form.elements[name]) form.elements[name].value = value;
     }
+    refreshCcyLabels(form, "data-cost-ccy-label", form.elements.costCurrency.value);
     refreshCostSplit(form);
   }
 
-  // Vẽ lại panel chi tiết (sau khi sửa nhanh, lưu, tải chứng từ…) vẫn giữ nguyên chỗ đang cuộn tới.
+  /** Vị trí đang cuộn của panel chi tiết, để vẽ lại (sau khi sửa nhanh, lưu, tải chứng từ…) vẫn giữ nguyên chỗ cũ. */
   function detailScroll() {
     const body = root?.querySelector('[data-slot="detail"] .drawer-body');
     return body && s.viewId ? { id: s.viewId, top: body.scrollTop } : null;
   }
+  /** Cuộn panel chi tiết về vị trí đã nhớ bằng detailScroll (nếu vẫn là khoản đó). */
   function restoreDetailScroll(scroll) {
     if (!scroll || scroll.id !== s.viewId) return;
     const body = root.querySelector('[data-slot="detail"] .drawer-body');
@@ -1353,8 +1434,11 @@ function createRecordsPage(kind) {
     await loadAttachments(id);
   }
 
+  /**
+   * Tải chứng từ của khoản `id` rồi vẽ lại panel chi tiết. Khoản chi gắn với khoản thu thì tải kèm chứng từ
+   * của khoản thu đó để xem ngay tại đây.
+   */
   async function loadAttachments(id) {
-    // Khoản chi gắn với khoản thu: tải kèm chứng từ của khoản thu đó để xem ngay tại đây.
     const incomeId = isIncome ? null : list().find((x) => x.id === id)?.linkedIncomeId;
     const linkedJob = incomeId == null ? null : listAttachments("income", incomeId).then(
       (items) => ({ incomeId, items }), (e) => ({ incomeId, items: [], error: e.message }));
@@ -1371,6 +1455,7 @@ function createRecordsPage(kind) {
     refreshDetail();
   }
 
+  /** Tải file lên làm chứng từ của khoản đang xem trong panel chi tiết. */
   async function uploadToDetail(files) {
     const ok = acceptFiles(files);
     if (!ok.length || !s.viewId) return;
@@ -1387,22 +1472,26 @@ function createRecordsPage(kind) {
     reload();
   }
 
+  /** Thêm file vào danh sách chờ tải lên cùng form (bỏ file sai định dạng / quá lớn). */
   function addPending(files) {
     s.pendingFiles = [...s.pendingFiles, ...acceptFiles(files)];
     refreshPending();
   }
 
   // ---- Kéo thả file vào vùng chứng từ (form hoặc chi tiết)
+  /** Kéo file vào vùng chứng từ: tô sáng vùng thả. */
   function onDragOver(e) {
     const zone = e.target.closest("[data-drop]");
     if (!zone) return;
     e.preventDefault();
     zone.classList.add("is-dragover");
   }
+  /** Kéo file ra khỏi vùng chứng từ: bỏ tô sáng. */
   function onDragLeave(e) {
     const zone = e.target.closest("[data-drop]");
     if (zone && !zone.contains(e.relatedTarget)) zone.classList.remove("is-dragover");
   }
+  /** Thả file vào vùng chứng từ: ở form thì chờ lưu cùng form, ở panel chi tiết thì tải lên ngay. */
   function onDrop(e) {
     const zone = e.target.closest("[data-drop]");
     if (!zone) return;
@@ -1412,22 +1501,25 @@ function createRecordsPage(kind) {
     else uploadToDetail(e.dataTransfer.files);
   }
 
+  /**
+   * Xử lý mọi cú bấm trong trang theo `data-action` / `data-close` của phần tử được bấm: bấm ra nền mờ để đóng
+   * modal / form, bấm vào dòng để xem chi tiết, các nút lọc, phân trang, Etsy, chứng từ… Bỏ qua khi đang sửa trong ô.
+   */
   function onClick(e) {
-    if (e.target.closest(".cell-editor")) return; // đang sửa trong ô
-    // Bấm ra ngoài (vào nền mờ) để đóng modal.
+    if (e.target.closest(".cell-editor")) return;
     if (e.target.classList.contains("modal-back") || e.target.classList.contains("drawer-back")) {
       const which = e.target.dataset.close;
       if (which === "cols") { s.colsOpen = false; render(root); }
       else if (which === "cats") { s.catsOpen = false; s.catEditId = null; render(root); }
       else if (which === "etsy") { s.etsy.open = false; render(root); }
       else if (which === "view") { s.viewId = null; render(root); }
-      else if (which === "form") closeForm(); // bấm ra ngoài: đóng hẳn
+      else if (which === "form") closeForm();
       return;
     }
     const el = e.target.closest("[data-action]");
     if (!el || !root.contains(el)) return;
     switch (el.dataset.action) {
-      case "open-link": break; // để trình duyệt mở link, không mở chi tiết dòng
+      case "open-link": break;
       case "toggle-filters": s.showFilters = !s.showFilters; render(root); break;
       case "set-filter": s[el.dataset.key] = el.dataset.value; s.page = 1; render(root); break;
       case "clear-filters":
@@ -1436,7 +1528,7 @@ function createRecordsPage(kind) {
         break;
       case "new": navigate(`${basePath}?new=1`); break;
       case "page": s.page = Number(el.dataset.page); refreshTable(); break;
-      case "view": if (e.detail === 1) openView(Number(el.dataset.id)); break; // bấm vào dòng = xem chi tiết
+      case "view": if (e.detail === 1) openView(Number(el.dataset.id)); break;
       case "view-prev":
       case "view-next": {
         const n = viewNav();
@@ -1515,7 +1607,7 @@ function createRecordsPage(kind) {
         }, { note: TRASH_NOTE });
         break;
       }
-      case "close-form": closeForm(formTarget()?.rec?.id); break; // Hủy: quay lại chi tiết khoản đang sửa
+      case "close-form": closeForm(formTarget()?.rec?.id); break;
       case "toggle-section": toggleFormSection(el); break;
       case "open-cols":
         s.draftCols = loadCols(kind);
@@ -1555,14 +1647,23 @@ function createRecordsPage(kind) {
     }
   }
 
+  /**
+   * Xử lý ô chọn / ô nhập đổi giá trị: loại tiền đang xem, ô "Lưu bằng", cột hiển thị, số dòng / trang
+   * (đưa về 1 – MAX_PAGE_SIZE nếu sai), bộ lọc… Ô gõ ngày chỉ áp dụng khi gõ xong (xem app.js).
+   */
   function onChange(e) {
     const t = e.target;
     const draftForm = t.closest?.('form[data-form="cost"]');
     if (draftForm) rememberCostDraft(draftForm);
-    if (t.classList.contains("date-text")) return; // ô gõ ngày: chỉ áp dụng khi gõ xong (xem app.js)
+    if (t.classList.contains("date-text")) return;
     if (t.dataset.action === "ccy") { setCcy(t.value); return; }
+    if (t.name === "currency" && t.closest("form.record-form")) { refreshCcyLabels(t.form, "data-ccy-label", t.value); return; }
+    if (t.name === "costCurrency") {
+      refreshCcyLabels(t.form, "data-cost-ccy-label", t.value);
+      refreshCostSplit(t.form);
+      return;
+    }
     if (t.dataset.col) { s.draftCols = { ...s.draftCols, [t.dataset.col]: t.checked }; return; }
-    // Số dòng / trang: áp dụng khi gõ xong (Enter hoặc rời ô), số lẻ / ngoài khoảng thì đưa về 1 – MAX_PAGE_SIZE.
     if (t.dataset.pageSize !== undefined) {
       const n = Math.round(Number(t.value));
       s.pageSize = Number.isFinite(n) && n >= 1 ? Math.min(n, MAX_PAGE_SIZE) : PAGE_SIZE;
@@ -1604,6 +1705,10 @@ function createRecordsPage(kind) {
     }
   }
 
+  /**
+   * Xử lý khi đang gõ: tìm kiếm, nhớ tiền xưởng / ship gõ dở, và tự tính trong form tiền sau thuế, thành tiền,
+   * phần trước thuế / thuế của tiền xưởng / ship.
+   */
   function onInput(e) {
     const t = e.target;
     const draftForm = t.closest?.('form[data-form="cost"]');
@@ -1614,7 +1719,6 @@ function createRecordsPage(kind) {
       refreshTable();
       return;
     }
-    // Tự tính tiền sau thuế, subtotal và phần trước thuế / thuế của tiền xưởng / ship trong form.
     const costForm = t.closest('form.record-form, form[data-form="cost"]');
     if (costForm && (t.name === "costAmount" || t.name === "costTax")) refreshCostSplit(costForm);
     const form = t.closest("form.record-form");
@@ -1628,6 +1732,10 @@ function createRecordsPage(kind) {
     }
   }
 
+  /**
+   * Xử lý gửi form: thêm / đổi tên danh mục, lưu tiền xưởng / ship ở panel chi tiết, hoặc lưu form thêm / sửa khoản.
+   * Khoản thu lưu xong mới lưu tiền xưởng / ship (chỉ khi có nhập, hoặc khi bỏ số đã có), rồi mở chi tiết khoản vừa lưu.
+   */
   async function onSubmit(e) {
     const form = e.target;
     if (form.dataset.form === "etsy-load") {
@@ -1655,7 +1763,7 @@ function createRecordsPage(kind) {
       e.preventDefault();
       const btn = form.querySelector('button[type="submit"]');
       btn.disabled = true;
-      if (await saveCost(s.viewId, costInputOf(form, store.ccy))) {
+      if (await saveCost(s.viewId, costInputOf(form))) {
         s.costDraft = null;
         await reload();
       } else btn.disabled = false;
@@ -1672,15 +1780,14 @@ function createRecordsPage(kind) {
       payload.categoryId = await resolveProductGroup(fd.get("productGroup"));
       if (payload.categoryId === undefined) { submitBtn.disabled = false; return; }
     }
-    const cost = isIncome ? costInputOf(form, store.ccy) : null;
+    const cost = isIncome ? costInputOf(form) : null;
     const saved = await saveRecord(kind, { ...payload, source: rec?.source || "MANUAL" }, rec?.id, s.pendingFiles);
-    // Tiền xưởng / tiền ship: lưu sau khi đã có khoản thu (chỉ khi có nhập, hoặc khi bỏ số đã có).
     if (saved && cost && (cost.amount > 0 || (rec && costOf(rec, store.expenses).items.length))) {
       if (await saveCost(saved.id, cost)) await reload();
     }
     if (saved) {
       s.pendingFiles = [];
-      closeForm(saved.id); // lưu xong mở chi tiết của khoản vừa thêm / sửa
+      closeForm(saved.id);
     } else {
       submitBtn.disabled = false;
     }
@@ -1690,18 +1797,26 @@ function createRecordsPage(kind) {
   const MONEY_FIELDS = ["amount", "itemTotal", "discountAmount", "shippingAmount", "taxAmount"];
   const REQUIRED_FIELDS = ["date", "description", "categoryId", "amount"];
 
-  /** Giá trị đang hiện của trường (tiền theo loại tiền đang xem) — dùng làm giá trị ban đầu của ô sửa. */
+  /** Loại tiền của ô sửa số tiền: loại tiền đã lưu của khoản (tiền xưởng / ship: của khoản chi gắn kèm). */
+  function editCcy(r, field) {
+    if (field === "cost") return costOf(r, store.expenses).items[0]?.currency || store.ccy;
+    return r.currency;
+  }
+
+  /** Giá trị ban đầu của ô sửa; số tiền là số đã lưu, theo loại tiền đã lưu (không quy đổi). */
   function editValue(r, field) {
     const v = field === "date" ? r[dateKey] : r[field];
     if (field === "categoryId" && isIncome) return r.categoryId == null ? "" : catName(cats(), r.categoryId);
-    if (MONEY_FIELDS.includes(field)) return v === 0 || v ? String(toDisplay(v, store.ccy, r[dateKey])) : "";
+    if (MONEY_FIELDS.includes(field)) return r.orig[field] === 0 || r.orig[field] ? String(r.orig[field]) : "";
     if (field === "cost") {
-      const cost = costOf(r, store.expenses);
-      return cost.total ? String(toDisplay(cost.total, store.ccy, cost.items[0]?.expenseDate || r[dateKey])) : "";
+      const linked = costOf(r, store.expenses).items[0];
+      return linked?.orig.amountAfterTax ? String(linked.orig.amountAfterTax) : "";
     }
+    if (field === "currency") return r.currency;
     return v == null ? "" : String(v);
   }
 
+  /** HTML ô sửa nhanh cho trường `field` (ô chọn, ô ngày, ô số tiền kèm chữ loại tiền…). */
   function editorHtml(r, field) {
     const v = esc(editValue(r, field));
     const num = (extra = "") => `<input class="cell-editor" type="number" step="0.01" min="0" value="${v}" ${extra}/>`;
@@ -1714,19 +1829,24 @@ function createRecordsPage(kind) {
       case "originScope": return `<select class="cell-editor">${optionsHtml([["", "—"], ...SCOPES.map((x) => [x.id, x.name])], r.originScope)}</select>`;
       case "productQty": return `<input class="cell-editor" type="number" min="1" step="1" value="${v}" />`;
       case "taxPercent": return num('max="100" placeholder="%"');
+      case "currency": return `<select class="cell-editor" translate="no">${optionsHtml([["USD", "USD ($)"], ["EUR", "EUR (€)"]], r.currency)}</select>`;
       case "note": return `<textarea class="cell-editor" rows="3">${v}</textarea>`;
       default:
         return MONEY_FIELDS.includes(field) || field === "cost"
-          ? num(`placeholder="${store.ccy}"`)
+          ? `${num(`placeholder="${editCcy(r, field)}"`)}<span class="cell-editor-ccy" translate="no">${editCcy(r, field)}</span>`
           : `<input class="cell-editor" value="${v}" />`;
     }
   }
 
-  /** Lý do không sửa được (chuỗi rỗng = sửa được). */
+  /**
+   * Lý do không sửa nhanh được trường `field` của khoản `r` (chuỗi rỗng = sửa được).
+   * Tiền xưởng / ship sửa được cả với đơn Etsy (backend kiểm tra khóa sổ theo ngày chi); đơn Etsy chỉ sửa được
+   * nhóm sản phẩm vì Etsy không có thông tin này.
+   */
   function editBlock(r, field) {
     if (!field) return "Cột này tự tính, không sửa trực tiếp được.";
-    if (field === "cost") return ""; // tiền xưởng / ship sửa được cả với đơn Etsy; backend kiểm tra khóa sổ theo ngày chi
-    if (isEtsyLocked(r) && !(isIncome && field === "categoryId")) return ETSY_READONLY; // nhóm sản phẩm không có từ Etsy
+    if (field === "cost") return "";
+    if (isEtsyLocked(r) && !(isIncome && field === "categoryId")) return ETSY_READONLY;
     if (isLocked(r[dateKey])) return lockMessage(r[dateKey]);
     return "";
   }
@@ -1754,22 +1874,26 @@ function createRecordsPage(kind) {
     if (editor.tagName === "SELECT") editor.addEventListener("change", () => finish(true));
   }
 
+  /** Hủy sửa nhanh: vẽ lại bảng và panel chi tiết như cũ. */
   function cancelEdit() {
     refreshTable();
     refreshDetail();
   }
 
+  /**
+   * Lưu giá trị sửa nhanh `raw` của trường `field` (không đổi gì thì thôi). Trường bắt buộc không được để trống
+   * (trừ nhóm sản phẩm của khoản thu). Đổi "Lưu bằng" giữ nguyên các số đã gõ, chỉ đổi loại tiền; sửa số tiền thì
+   * lưu theo số và loại tiền đã lưu — loại tiền chỉ đổi khi người dùng chọn ở dòng "Lưu bằng".
+   */
   async function commitEdit(r, field, raw) {
-    if (raw === editValue(r, field)) { cancelEdit(); return; } // không đổi gì
-    // Nhóm sản phẩm của khoản thu được để trống (chưa phân nhóm).
+    if (raw === editValue(r, field)) { cancelEdit(); return; }
     if (REQUIRED_FIELDS.includes(field) && !(isIncome && field === "categoryId") && raw === "") { toast("Trường này bắt buộc, không được để trống."); cancelEdit(); return; }
-    const { ccy } = store;
     if (field === "cost") {
       const linked = costOf(r, store.expenses).items[0];
       const date = linked?.expenseDate || r[dateKey];
       const ok = await saveCost(r.id, {
         amount: typedMoney(raw) ?? 0,
-        currencyCode: ccy,
+        currencyCode: editCcy(r, field),
         taxPercent: linked ? Number(linked.taxPercent) || 0 : r.saleRegion === "IN_EU" ? 19 : 0,
         invoiceId: linked?.invoiceId || "",
         payee: linked?.recipient || "",
@@ -1779,9 +1903,12 @@ function createRecordsPage(kind) {
       if (ok) await reload(); else cancelEdit();
       return;
     }
+    if (field === "currency") {
+      if (!(await saveRecord(kind, { ...r, ...origMoney(r), currency: raw }, r.id))) cancelEdit();
+      return;
+    }
     let value = raw;
-    // Sửa một số tiền: lưu cả khoản theo loại tiền đang gõ (các số khác như đang hiện); sửa trường khác: giữ số gốc.
-    const money = MONEY_FIELDS.includes(field) ? shownMoney(r, ccy, r[dateKey]) : origMoney(r);
+    const money = origMoney(r);
     if (MONEY_FIELDS.includes(field)) value = field === "amount" ? typedMoney(raw) ?? 0 : typedMoney(raw);
     else if (field === "taxPercent") value = Number(raw || 0);
     else if (field === "productQty") value = raw ? Math.max(1, Math.round(Number(raw))) : null;
@@ -1794,6 +1921,7 @@ function createRecordsPage(kind) {
     if (!(await saveRecord(kind, next, r.id))) cancelEdit();
   }
 
+  /** Nhấp đúp vào một dòng sửa được trong panel chi tiết để bắt đầu sửa nhanh. */
   function onDblClick(e) {
     if (e.target.closest(".cell-editor, a")) return;
     const dr = e.target.closest(".dr-row[data-edit]");
@@ -1807,9 +1935,8 @@ function createRecordsPage(kind) {
   /** Lưu tiền xưởng / tiền ship của khoản thu `incomeId`. Trả về true nếu thành công. */
   async function saveCost(incomeId, cost) {
     if (!incomeId || !cost) return false;
-    const income = store.incomes.find((x) => x.id === incomeId);
     try {
-      await setIncomeCost(incomeId, keepCostMoney(income && costOf(income, store.expenses).items[0], cost));
+      await setIncomeCost(incomeId, cost);
       toast(cost.amount > 0 ? "Đã lưu tiền xưởng / tiền ship (đã thêm vào Khoản chi)" : "Đã bỏ tiền xưởng / tiền ship của khoản thu");
       return true;
     } catch (err) {

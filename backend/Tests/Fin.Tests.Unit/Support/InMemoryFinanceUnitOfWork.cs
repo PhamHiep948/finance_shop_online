@@ -6,8 +6,10 @@ using Fin.Model.Dto.Finance.Responses;
 
 namespace Fin.Tests.Unit.Support
 {
-    // Unit of work keeping ledger entries, expense categories, exchange rates and audit logs in memory.
-    // Only what the Etsy and exchange-rate handlers use is implemented; anything else throws.
+    /// <summary>
+    /// Unit of work giả cho test: giữ khoản thu / chi, danh mục, tỷ giá, lịch sử… trong bộ nhớ.
+    /// Chỉ cài các hàm mà test Etsy, tỷ giá và tiền xưởng / ship dùng; hàm khác ném NotSupportedException.
+    /// </summary>
     public sealed class InMemoryFinanceUnitOfWork : IFinanceUnitOfWork,
         ILedgerEntryRepository, ICategoryRepository, IFxMonthlyRateRepository, IFxDailyRateRepository, IAuditLogRepository,
         IEtsyListingStatRepository
@@ -118,7 +120,10 @@ namespace Fin.Tests.Unit.Support
             Task.FromResult(Entries.FirstOrDefault(x => x.Kind == kind && x.Id == id && x.DeletedAt == null));
         Task<LedgerEntry?> ILedgerEntryRepository.GetAnyAsync(long id, CancellationToken cancellationToken) => throw new NotSupportedException();
         Task<List<LedgerEntry>> ILedgerEntryRepository.GetDeletedAsync(DateTime? deletedBefore, CancellationToken cancellationToken) => throw new NotSupportedException();
-        Task<List<LedgerEntry>> ILedgerEntryRepository.GetLinkedExpensesAsync(long incomeId, bool deleted, CancellationToken cancellationToken) => throw new NotSupportedException();
+        Task<List<LedgerEntry>> ILedgerEntryRepository.GetLinkedExpensesAsync(long incomeId, bool deleted, CancellationToken cancellationToken) =>
+            Task.FromResult(Entries
+                .Where(x => x.Kind == "EXPENSE" && x.LinkedIncomeId == incomeId && (x.DeletedAt != null) == deleted)
+                .ToList());
         void ILedgerEntryRepository.Remove(LedgerEntry entry) => throw new NotSupportedException();
 
         // ---- Categories
@@ -132,7 +137,11 @@ namespace Fin.Tests.Unit.Support
         Task<bool> ICategoryRepository.NameExistsAsync(string kind, string name, long? excludeId, CancellationToken cancellationToken) => throw new NotSupportedException();
         Task<int> ICategoryRepository.CountEntriesAsync(long id, string kind, bool deleted, CancellationToken cancellationToken) => throw new NotSupportedException();
         Task<int> ICategoryRepository.ClearScopeAsync(long scopeId, CancellationToken cancellationToken) => throw new NotSupportedException();
-        void ICategoryRepository.Add(Category category) => throw new NotSupportedException();
+        void ICategoryRepository.Add(Category category)
+        {
+            category.Id = _nextId++;
+            Categories.Add(category);
+        }
         void ICategoryRepository.Remove(Category category) => throw new NotSupportedException();
 
         // ---- Monthly rates

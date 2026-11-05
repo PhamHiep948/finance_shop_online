@@ -1,11 +1,15 @@
-// Trạng thái dùng chung của ứng dụng (thay cho FinanceProvider/useFinance).
+// Trạng thái dùng chung của ứng dụng: dữ liệu khoản thu / chi, loại tiền đang xem, khóa sổ, và các hàm gọi API.
+
+/** Cấu hình theo loại khoản: đường dẫn API, tên trường ngày, tên hiển thị. */
 const KIND = {
   income: { path: "/incomes", dateKey: "incomeDate", label: "khoản thu" },
   expense: { path: "/expenses", dateKey: "expenseDate", label: "khoản chi" },
 };
-// Các trường tiền của một khoản. Backend lưu đúng số và loại tiền (USD / EUR) lúc nhập; trong app mọi phép tính
-// dùng USD, nên khi tải về các trường này được quy sang USD theo tỷ giá ngày của khoản (không làm tròn, để xem lại
-// bằng EUR ra đúng số đã nhập). Số gốc giữ ở `orig`, loại tiền gốc ở `currency`.
+/**
+ * Các trường tiền của một khoản. Backend lưu đúng số và loại tiền (USD / EUR) người dùng chọn; trong app mọi phép tính
+ * dùng USD, nên khi tải về các trường này được quy sang USD theo tỷ giá ngày của khoản (không làm tròn, để xem lại
+ * bằng EUR ra đúng số đã nhập). Số gốc giữ ở `orig`, loại tiền gốc ở `currency`.
+ */
 const RECORD_MONEY_FIELDS = ["amount", "amountAfterTax", "unitPrice", "itemTotal", "discountAmount", "subtotal", "shippingAmount", "taxAmount"];
 /** Quy lại các trường tiền (USD) của khoản `r` từ số gốc; gọi lại khi tỷ giá đổi. */
 function withUsd(r, key) {
@@ -13,6 +17,7 @@ function withUsd(r, key) {
   RECORD_MONEY_FIELDS.forEach((f) => { if (f in r.orig) out[f] = usdOf(r.orig[f], r.currency, r[key]); });
   return out;
 }
+/** Đổi một dòng backend trả về thành khoản dùng trong app (`key` = tên trường ngày): giữ số gốc, quy sang USD. */
 const mapRow = (key) => (r) => withUsd({
   ...r, [key]: r.date, taxPercent: Number(r.taxPercent), currency: currencyOf(r.currencyCode),
   orig: Object.fromEntries(RECORD_MONEY_FIELDS.filter((f) => f in r).map((f) => [f, r[f] == null || r[f] === "" ? r[f] : Number(r[f])])),
@@ -20,13 +25,7 @@ const mapRow = (key) => (r) => withUsd({
 }, key);
 /** Các trường tiền của khoản `r` đúng như đã lưu (số gốc + loại tiền gốc), để lưu lại mà không đổi số nào. */
 const origMoney = (r) => ({ ...r.orig, currency: r.currency });
-/** Các trường tiền của khoản `r` theo loại tiền `ccy` như đang hiện trên màn hình (cùng loại tiền gốc thì là số gốc). */
-function shownMoney(r, ccy, iso) {
-  if (r.currency === ccy) return origMoney(r);
-  const out = { currency: ccy };
-  RECORD_MONEY_FIELDS.forEach((f) => { if (f in r.orig) out[f] = r[f] == null || r[f] === "" ? r[f] : toDisplay(r[f], ccy, iso); });
-  return out;
-}
+/** Dựng body gửi lên backend từ khoản `p` trong app (`key` = tên trường ngày). */
 const bodyOf = (key, p) => ({
   ...p, date: p[key], description: p.description, categoryId: p.categoryId,
   amount: p.amount, taxPercent: p.taxPercent, amountAfterTax: p.amountAfterTax,
@@ -36,12 +35,14 @@ const bodyOf = (key, p) => ({
   originScope: p.originScope || null, paymentMethod: p.paymentMethod || null,
 });
 
+/**
+ * Trạng thái dùng chung: `ccy` = loại tiền đang xem, `incomes` / `expenses` = danh sách khoản,
+ * `lock` = cấu hình khóa sổ (lấy từ /settings), `etsyAuto*` = trạng thái đồng bộ Etsy tự động đã báo cho người dùng.
+ */
 const store = {
   ccy: (() => { try { return localStorage.getItem("fm_ccy") === "EUR" ? "EUR" : "USD"; } catch { return "USD"; } })(),
   incomes: [], expenses: [], loading: true,
-  // Khóa sổ theo quý hoặc tháng (lấy từ backend /settings).
   lock: { enabled: false, period: "QUARTER", graceDays: 1, today: localISO(new Date()) },
-  // Trạng thái đồng bộ Etsy tự động (app.js hỏi backend mỗi phút); autoSeen = lần chạy đã báo cho người dùng.
   etsyAuto: null, etsyAutoSeen: undefined, etsyAdsSeen: undefined,
 };
 
@@ -75,6 +76,7 @@ function periodName(iso) {
   const [y, m] = String(iso).split("-").map(Number);
   return store.lock.period === "MONTH" ? `Tháng ${m}/${y}` : `Quý ${Math.floor((m - 1) / 3) + 1}/${y}`;
 }
+/** Câu báo kỳ của ngày `iso` đã khóa sổ, kèm hạn chỉnh sửa. */
 function lockMessage(iso) {
   return `${periodName(iso)} đã khóa sổ (hạn chỉnh sửa: ${dmy(lastEditableDay(iso))}).`;
 }
@@ -84,9 +86,11 @@ const storeListeners = [];
 function onStoreChange(fn) {
   storeListeners.push(fn);
 }
+/** Gọi mọi hàm đã đăng ký bằng onStoreChange (vẽ lại trang). */
 function emitStore() {
   storeListeners.forEach((fn) => fn());
 }
+/** Đổi loại tiền đang xem (USD / EUR), nhớ vào localStorage rồi vẽ lại trang. */
 function setCcy(v) {
   store.ccy = v === "EUR" ? "EUR" : "USD";
   try { localStorage.setItem("fm_ccy", store.ccy); } catch { /* bỏ qua */ }
@@ -114,22 +118,24 @@ function toast(msg, action) {
   setTimeout(() => el.remove(), action ? 6000 : 3000);
 }
 
-/** Lấy tỷ giá USD/EUR mới nhất từ backend; lỗi thì giữ tỷ giá tạm. */
+/**
+ * Lấy tỷ giá USD/EUR mới nhất, tỷ giá tự nhập theo tháng và theo ngày từ backend (lỗi / mất mạng thì giữ tỷ giá tạm),
+ * rồi quy lại số USD của mọi khoản theo tỷ giá mới.
+ */
 async function loadFx() {
   const [fx, monthly, daily] = await Promise.all([api("/fx").catch(() => null), api("/fx/monthly").catch(() => null), api("/fx/daily").catch(() => null)]);
-  // Không có mạng / backend chưa chạy: giữ tỷ giá tạm.
   if (fx?.usdToEur > 0) {
     FX_USD_TO_EUR = fx.usdToEur;
     FX_DATE = fx.auto ? fx.date : "";
   }
   if (Array.isArray(monthly)) FX_MONTHLY = Object.fromEntries(monthly.map((r) => [r.month, Number(r.eurToUsd)]));
   if (Array.isArray(daily)) FX_DAILY = Object.fromEntries(daily.map((r) => [r.date, Number(r.eurToUsd)]));
-  // Khoản nhập bằng EUR: quy lại sang USD theo tỷ giá mới.
   store.incomes = store.incomes.map((r) => withUsd(r, "incomeDate"));
   store.expenses = store.expenses.map((r) => withUsd(r, "expenseDate"));
   emitStore();
 }
 
+/** Tải lại toàn bộ dữ liệu từ backend: danh mục, phạm vi, nhóm báo cáo, khoản thu / chi, cấu hình khóa sổ. */
 async function reload() {
   store.loading = true;
   try {
@@ -154,28 +160,13 @@ async function reload() {
   }
 }
 
-/** Hai số tiền bằng nhau (ô trống = 0, như lúc lưu). */
-const sameMoney = (a, b) => (Number(a) || 0) === (Number(b) || 0);
-
 /**
- * Số tiền trong `payload` là số gõ theo loại tiền `payload.currency` và được lưu đúng như vậy (gõ EUR lưu EUR).
- * Khoản đang lưu bằng loại tiền khác mà người dùng không đổi số tiền nào (chỉ sửa mô tả, ngày…) thì giữ nguyên
- * số gốc và loại tiền gốc: số đang hiện chỉ là số quy đổi, lưu lại sẽ đổi loại tiền và lệch vài cent.
- * Số trước thuế và % thuế không đổi thì giữ luôn số sau thuế đã lưu (có thể là số tiền thực nhận / thực trả).
+ * Số tiền trong `payload` là số gõ theo loại tiền người dùng chọn ở `payload.currency` và được lưu đúng như vậy
+ * (gõ EUR lưu EUR); đổi loại tiền thì các số giữ nguyên, chỉ đổi loại tiền. Số trước thuế và % thuế không đổi
+ * thì giữ luôn số sau thuế đã lưu (có thể là số tiền thực nhận / thực trả).
  */
-function keepUnchangedMoney(previous, payload, dateKey) {
+function keepUnchangedMoney(previous, payload) {
   const next = { ...payload, currency: currencyOf(payload.currency) };
-  if (next.currency !== previous.currency) {
-    const shown = shownMoney(previous, next.currency, previous[dateKey]);
-    const untouched = RECORD_MONEY_FIELDS.filter((f) => f !== "amountAfterTax" && f in next)
-      .every((f) => sameMoney(next[f], shown[f]));
-    if (!untouched) return next;
-    RECORD_MONEY_FIELDS.forEach((f) => { if (f in next && f in previous.orig) next[f] = previous.orig[f]; });
-    next.currency = previous.currency;
-    next.amountAfterTax = Number(next.taxPercent) === Number(previous.taxPercent)
-      ? previous.orig.amountAfterTax : afterTax(next.amount, next.taxPercent);
-    return next;
-  }
   if (Number(next.amount) === Number(previous.orig.amount) && Number(next.taxPercent) === Number(previous.taxPercent)) {
     next.amountAfterTax = previous.orig.amountAfterTax;
   }
@@ -186,7 +177,7 @@ function keepUnchangedMoney(previous, payload, dateKey) {
 async function saveRecord(kind, payload, id, files = []) {
   const config = KIND[kind];
   const previous = id ? (kind === "income" ? store.incomes : store.expenses).find((r) => r.id === id) : null;
-  if (previous) payload = keepUnchangedMoney(previous, payload, config.dateKey);
+  if (previous) payload = keepUnchangedMoney(previous, payload);
   const body = bodyOf(config.dateKey, { salesChannel: previous?.salesChannel, paymentMethod: previous?.paymentMethod, ...payload });
   let saved;
   try {
@@ -208,19 +199,26 @@ async function saveRecord(kind, payload, id, files = []) {
 }
 
 // ---- Chứng từ đính kèm
+/** Danh sách chứng từ của khoản `id` (`kind` = "income" / "expense"). */
 function listAttachments(kind, id) {
   return api(`${KIND[kind].path}/${id}/attachments`);
 }
+/** Tải các file `files` lên làm chứng từ của khoản `id`. */
 function uploadAttachments(kind, id, files) {
   const fd = new FormData();
   [...files].forEach((f) => fd.append("files", f));
   return api(`${KIND[kind].path}/${id}/attachments`, { method: "POST", body: fd });
 }
+/** Xóa một chứng từ. */
 function deleteAttachment(attachmentId) {
   return api(`/attachments/${attachmentId}`, { method: "DELETE" });
 }
 
 // ---- Nhóm sản phẩm (khoản thu) / loại chi
+/**
+ * Thêm / đổi tên / xóa một danh mục rồi tải lại dữ liệu. `kind`: "income", "expense" hoặc "scope" (phạm vi khoản chi).
+ * Trả về true nếu thành công, lỗi thì hiện thông báo và trả về false.
+ */
 async function categoryAction(kind, method, id, name) {
   try {
     await api(`/categories/${kind}${id ? `/${id}` : ""}`, { method, body: name === undefined ? undefined : { name } });
@@ -231,7 +229,7 @@ async function categoryAction(kind, method, id, name) {
     return false;
   }
 }
-// `kind`: "income", "expense" hoặc "scope" (phạm vi khoản chi).
+/** Thêm / đổi tên / xóa danh mục (`kind` = "income", "expense" hoặc "scope"). */
 const addCategory = (kind, name) => categoryAction(kind, "POST", null, name);
 const renameCategory = (kind, id, name) => categoryAction(kind, "PUT", id, name);
 const removeCategory = (kind, id) => categoryAction(kind, "DELETE", id);
@@ -248,6 +246,7 @@ async function softDelete(kind, id) {
 }
 
 // ---- Nhóm loại thu / loại chi (bộ lọc báo cáo)
+/** Thêm / sửa / xóa một nhóm báo cáo rồi tải lại dữ liệu. Trả về kết quả backend (hoặc true), lỗi thì null. */
 async function groupAction(method, id, body) {
   try {
     const res = await api(`/category-groups${id ? `/${id}` : ""}`, { method, body });
@@ -258,17 +257,23 @@ async function groupAction(method, id, body) {
     return null;
   }
 }
+/** Thêm / sửa / xóa nhóm loại thu / loại chi dùng để lọc báo cáo. */
 const addGroup = (name, categoryIds) => groupAction("POST", null, { name, categoryIds });
 const updateGroup = (id, patch) => groupAction("PUT", id, patch);
 const removeGroup = (id) => groupAction("DELETE", id);
 
-// ---- Tiền xưởng / tiền ship của khoản thu (lưu thành khoản chi gắn với khoản thu)
-// `cost` = { amount (đã trả, gồm thuế), currencyCode (loại tiền đã gõ), taxPercent, invoiceId, payee, originScope, date };
-// amount 0 = bỏ.
+// ---- Tiền xưởng / tiền ship của khoản thu
+/**
+ * Lưu tiền xưởng / tiền ship của khoản thu `incomeId` (backend lưu thành khoản chi gắn với khoản thu).
+ * `cost` = { amount (đã trả, gồm thuế; 0 = bỏ), currencyCode (loại tiền đã gõ), taxPercent,
+ * categoryId (loại chi; null = tự chọn theo khu vực), invoiceId, payee, originScope, date }.
+ */
 const setIncomeCost = (incomeId, cost) => api(`/incomes/${incomeId}/cost`, { method: "PUT", body: cost });
 
 // ---- Thùng rác
+/** Thùng rác: xem danh sách, khôi phục, xóa hẳn một khoản, dọn sạch. */
 const listTrash = () => api("/trash");
+/** Khôi phục khoản `id` từ thùng rác rồi tải lại dữ liệu; `quiet` = không hiện thông báo. Trả về true nếu thành công. */
 async function restoreEntry(id, quiet = false) {
   try {
     await api(`/trash/${id}/restore`, { method: "POST" });
@@ -284,29 +289,33 @@ const purgeEntry = (id) => api(`/trash/${id}`, { method: "DELETE" });
 const emptyTrash = () => api("/trash", { method: "DELETE" });
 
 // ---- Lịch sử chỉnh sửa
+/** Tìm lịch sử chỉnh sửa theo bộ lọc `params` (bỏ qua các điều kiện để trống). */
 function listAudit(params) {
   const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== "" && v != null));
   return api(`/audit?${qs}`);
 }
 
 // ---- Etsy
+/** Gọi API Etsy: trạng thái kết nối, đơn hàng, nhập đơn, sản phẩm, doanh số, phí, ngắt kết nối. */
 const etsyStatus = () => api("/etsy/status");
 const etsyOrders = (from, to) => api(`/etsy/orders?from=${from}&to=${to}`);
 const etsyImport = (orders) => api("/etsy/import", { method: "POST", body: { orders } });
 const etsyListings = () => api("/etsy/listings");
-// Lượt xem / yêu thích trong khoảng ngày, tính từ số backend ghi lại mỗi ngày.
+/** Lượt xem / yêu thích của sản phẩm trong khoảng ngày, tính từ số backend ghi lại mỗi ngày. */
 const etsyListingViews = (from, to) => api(`/etsy/listings/views?from=${from}&to=${to}`);
 const etsySales = (from, to) => api(`/etsy/sales?from=${from}&to=${to}`);
 const etsyFees = (from, to) => api(`/etsy/fees?from=${from}&to=${to}`);
 const etsyRefresh = () => api("/etsy/refresh", { method: "POST" });
 const etsySyncAds = (from, to) => api(`/etsy/fees/sync?from=${from}&to=${to}`, { method: "POST" });
 const etsyDisconnect = () => api("/etsy/disconnect", { method: "POST" });
-// Đồng bộ tự động (backend tự lấy đơn mới theo chu kỳ).
+/** Trạng thái đồng bộ Etsy tự động (backend tự lấy đơn mới theo chu kỳ). */
 const etsyAutoSync = () => api("/etsy/autosync");
+/** Bật / tắt đồng bộ tự động và chạy đồng bộ ngay. */
 const setEtsyAutoSync = (enabled, intervalMinutes) => api("/etsy/autosync", { method: "PUT", body: { enabled, intervalMinutes } });
 const runEtsyAutoSync = () => api("/etsy/autosync/run", { method: "POST" });
 
 // ---- Tỷ giá EUR → USD tự nhập theo tháng
+/** Tỷ giá tự nhập theo tháng và theo ngày: xem, lưu, xóa. */
 const fxMonthly = () => api("/fx/monthly");
 const fxMonths = (from, to) => api(`/fx/months?from=${from}&to=${to}`);
 const setFxMonthly = (month, eurToUsd) => api(`/fx/monthly/${month}`, { method: "PUT", body: { eurToUsd } });
@@ -322,14 +331,17 @@ function typedMoney(v) {
   return Number.isFinite(n) ? round2(n) : null;
 }
 
+/**
+ * Đọc form khoản thu `fd` thành dữ liệu để lưu. Số tiền lưu đúng như gõ, theo loại tiền chọn ở ô "Lưu bằng"
+ * (không có ô đó thì theo `ccy`), không quy đổi. Nhóm sản phẩm để null: trang tự đổi tên nhóm gõ vào thành id.
+ */
 function incomePayload(fd, ccy) {
-  // Số tiền lưu đúng như gõ, theo loại tiền đang chọn `ccy` (gõ EUR lưu EUR, gõ USD lưu USD).
   return {
     incomeDate: fd.get("incomeDate"),
     description: fd.get("description"),
-    categoryId: null, // nhóm sản phẩm: trang đổi tên nhóm gõ vào thành id rồi gán (resolveProductGroup)
+    categoryId: null,
     amount: typedMoney(fd.get("amount")) ?? 0,
-    currency: ccy,
+    currency: currencyOf(fd.get("currency") || ccy),
     referenceCode: fd.get("referenceCode"),
     orderCode: String(fd.get("orderCode") || "").trim(),
     saleRegion: String(fd.get("saleRegion") || ""),
@@ -348,13 +360,14 @@ function incomePayload(fd, ccy) {
   };
 }
 
+/** Đọc form khoản chi `fd` thành dữ liệu để lưu; số tiền theo loại tiền chọn ở ô "Lưu bằng" (không có thì theo `ccy`). */
 function expensePayload(fd, ccy) {
   return {
     expenseDate: fd.get("expenseDate"),
     description: fd.get("description"),
     categoryId: Number(fd.get("categoryId")),
     amount: typedMoney(fd.get("amount")) ?? 0,
-    currency: ccy,
+    currency: currencyOf(fd.get("currency") || ccy),
     recipient: fd.get("recipient"),
     originScope: String(fd.get("originScope") || ""),
     invoiceId: String(fd.get("invoiceId") || "").trim(),
@@ -378,11 +391,13 @@ function bindRoot(root, handlers = {}) {
   root.ondrop = handlers.drop || null;
 }
 
+/** Dung lượng file dễ đọc: B, KB hoặc MB. */
 function fileSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
+/** Đuôi file chứng từ được phép tải lên và dung lượng tối đa mỗi file (10 MB). */
 const ATTACH_ACCEPT = ".jpg,.jpeg,.png,.gif,.webp,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.zip";
 const ATTACH_MAX = 10 * 1024 * 1024;
 

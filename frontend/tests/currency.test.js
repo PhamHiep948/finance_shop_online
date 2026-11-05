@@ -5,7 +5,7 @@ const { loadScripts } = require("./load");
 // Tháng 10/2026: 1 EUR = 1.1634 USD. Backend trả số tiền đúng như đã nhập, kèm loại tiền.
 function setup(ccy = "EUR") {
   const x = loadScripts(["js/format.js", "js/store.js"], { api: async () => [] })(
-    ["mapRow", "keepUnchangedMoney", "incomePayload", "expensePayload", "shownMoney", "money", "store", "setRates"].map((n) =>
+    ["mapRow", "keepUnchangedMoney", "incomePayload", "expensePayload", "money", "store", "setRates"].map((n) =>
       (n === "setRates" ? "setRates: (m) => { FX_MONTHLY = m; }" : n)));
   x.setRates({ "2026-10": 1.1634 });
   x.store.ccy = ccy;
@@ -36,25 +36,23 @@ test("gõ EUR thì lưu EUR, gõ USD thì lưu USD (không quy đổi trước k
   assert.deepEqual([exp.amount, exp.amountAfterTax, exp.currency], [20.5, 20.5, "USD"]);
 });
 
-test("khoản lưu USD, xem bằng EUR, chỉ sửa mô tả: giữ nguyên số USD và loại tiền USD", () => {
-  const { mapRow, keepUnchangedMoney, shownMoney } = setup("EUR");
-  const prev = mapRow("incomeDate")(apiRow({ currencyCode: "USD", amount: 100, amountAfterTax: 119 }));
-  const shown = shownMoney(prev, "EUR", prev.incomeDate);
-  const next = keepUnchangedMoney(prev, { description: "Lily mới", taxPercent: 19, ...shown, amountAfterTax: 0 }, "incomeDate");
-  assert.deepEqual([next.amount, next.amountAfterTax, next.currency], [100, 119, "USD"]);
+test("loại tiền lưu do người dùng chọn ở ô Lưu bằng, không theo loại tiền đang xem", () => {
+  const { incomePayload } = setup("USD");
+  const inc = incomePayload(form({ incomeDate: "2026-10-12", amount: "50", taxPercent: "0", currency: "EUR" }), "USD");
+  assert.deepEqual([inc.amount, inc.currency], [50, "EUR"]);
 });
 
-test("khoản lưu USD, xem bằng EUR, sửa số tiền: lưu theo EUR như đã gõ", () => {
-  const { mapRow, keepUnchangedMoney, shownMoney } = setup("EUR");
-  const prev = mapRow("incomeDate")(apiRow({ currencyCode: "USD", amount: 100, amountAfterTax: 119 }));
-  const next = keepUnchangedMoney(prev, { ...shownMoney(prev, "EUR", prev.incomeDate), taxPercent: 19, amount: 80, amountAfterTax: 95.2, currency: "EUR" }, "incomeDate");
-  assert.deepEqual([next.amount, next.amountAfterTax, next.currency], [80, 95.2, "EUR"]);
+test("đổi loại tiền lưu: giữ nguyên các số đã gõ, chỉ đổi loại tiền", () => {
+  const { mapRow, keepUnchangedMoney } = setup("EUR");
+  const prev = mapRow("incomeDate")(apiRow({ currencyCode: "USD", amount: 16.81, amountAfterTax: 20.01 }));
+  const next = keepUnchangedMoney(prev, { ...prev.orig, taxPercent: 19, currency: "EUR" });
+  assert.deepEqual([next.amount, next.amountAfterTax, next.currency], [16.81, 20.01, "EUR"]);
 });
 
 test("cùng loại tiền, số trước thuế và % thuế không đổi: giữ số sau thuế đã lưu", () => {
   const { mapRow, keepUnchangedMoney } = setup("EUR");
   const prev = mapRow("incomeDate")(apiRow({ amount: 16.81, amountAfterTax: 20.01 }));
-  const next = keepUnchangedMoney(prev, { amount: 16.81, taxPercent: 19, amountAfterTax: 20.0, currency: "EUR" }, "incomeDate");
+  const next = keepUnchangedMoney(prev, { amount: 16.81, taxPercent: 19, amountAfterTax: 20.0, currency: "EUR" });
   assert.equal(next.amountAfterTax, 20.01);
   assert.equal(next.currency, "EUR");
 });

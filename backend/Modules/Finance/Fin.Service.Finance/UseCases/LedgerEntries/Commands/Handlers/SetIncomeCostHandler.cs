@@ -12,6 +12,10 @@ using MediatR;
 
 namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
 {
+    /// <summary>
+    /// Lưu tiền xưởng / tiền ship của một khoản thu. Số tiền này được lưu thành một khoản chi gắn với khoản thu
+    /// (thêm mới, cập nhật, hoặc bỏ khi số tiền = 0), có kiểm tra khóa sổ và ghi lịch sử chỉnh sửa.
+    /// </summary>
     public sealed class SetIncomeCostHandler : IRequestHandler<SetIncomeCostCommand, Response<LedgerEntryResponse?>>
     {
         private const string FactoryCategory = "Tiền xưởng";
@@ -30,6 +34,10 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
             _timeProvider = timeProvider;
         }
 
+        /// <summary>
+        /// Xử lý yêu cầu lưu tiền xưởng / tiền ship: kiểm tra khoản thu, khóa sổ (ngày cũ và ngày mới), loại chi được chọn,
+        /// rồi thêm / sửa / bỏ khoản chi gắn kèm. Trả về khoản chi sau khi lưu (null nếu đã bỏ).
+        /// </summary>
         public async Task<Response<LedgerEntryResponse?>> Handle(SetIncomeCostCommand request, CancellationToken cancellationToken)
         {
             var income = await _unitOfWork.LedgerEntryRepository.GetResponseAsync(LedgerKinds.Income, request.IncomeId, cancellationToken);
@@ -49,6 +57,11 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
             {
                 return await RemoveAsync(linked, cancellationToken);
             }
+            if (payload.CategoryId is { } categoryId
+                && !await _unitOfWork.CategoryRepository.ExistsAsync(categoryId, CategoryKinds.Expense, cancellationToken))
+            {
+                return Response<LedgerEntryResponse?>.Fail(ErrorCodeEnum.CAT_ERR_005);
+            }
 
             var date = DateOnly.TryParseExact(payload.Date, FinanceConstants.IsoDateFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out var picked)
                 ? picked
@@ -64,6 +77,7 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
             return Response<LedgerEntryResponse?>.Ok(result);
         }
 
+        /// <summary>Bỏ tiền xưởng / tiền ship: chuyển khoản chi gắn kèm vào thùng rác (nếu có) và ghi lịch sử.</summary>
         private async Task<Response<LedgerEntryResponse?>> RemoveAsync(LedgerEntry? linked, CancellationToken cancellationToken)
         {
             if (linked is null)
@@ -77,9 +91,13 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
             return Response<LedgerEntryResponse?>.Ok(null);
         }
 
+        /// <summary>
+        /// Tạo khoản chi mới gắn với khoản thu. Mô tả là "Tiền xưởng · tên sản phẩm" (bán ngoài EU) hoặc
+        /// "Tiền ship · tên sản phẩm" (bán trong EU). Loại chi lấy theo người dùng chọn; không chọn thì lấy
+        /// "Tiền xưởng" / "Phí ship" theo khu vực (tự tạo loại chi nếu chưa có).
+        /// </summary>
         private async Task<LedgerEntryResponse> CreateAsync(LedgerEntryResponse income, IncomeCostRequest payload, DateOnly date, CancellationToken cancellationToken)
         {
-            // Outside the EU the cost is the factory bill; inside the EU it is the shipping label the shop pays.
             var inEu = income.SaleRegion == SalesValues.RegionInEu;
             var description = $"{(inEu ? "Tiền ship" : "Tiền xưởng")} · {income.Description}";
             var expense = new LedgerEntry
@@ -87,7 +105,7 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
                 Kind = LedgerKinds.Expense,
                 Date = date,
                 Description = description.Length > FinanceConstants.DescriptionMaxLength ? description[..FinanceConstants.DescriptionMaxLength] : description,
-                CategoryId = await CostCategoryIdAsync(inEu ? ShippingCategory : FactoryCategory, cancellationToken),
+                CategoryId = payload.CategoryId ?? await CostCategoryIdAsync(inEu ? ShippingCategory : FactoryCategory, cancellationToken),
                 OrderCode = income.OrderCode,
                 Source = EntrySources.LinkedCost,
                 LinkedIncomeId = income.Id,
@@ -105,11 +123,16 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
             return created;
         }
 
+        /// <summary>
+        /// Cập nhật khoản chi đã gắn với khoản thu: chỉ đổi các trường tiền xưởng / ship (ngày, bên nhận, phạm vi, hóa đơn,
+        /// số tiền) và loại chi khi người dùng có chọn. Mô tả, ghi chú có thể đã sửa ở trang Khoản chi nên giữ nguyên.
+        /// Ghi lịch sử nếu có trường thay đổi.
+        /// </summary>
         private async Task<LedgerEntryResponse> UpdateAsync(LedgerEntryResponse income, LedgerEntry expense, IncomeCostRequest payload, DateOnly date, CancellationToken cancellationToken)
         {
             var before = (await _unitOfWork.LedgerEntryRepository.GetResponseAsync(LedgerKinds.Expense, expense.Id, cancellationToken))!;
-            // Description, category and note may have been edited on the expense page; only the cost fields change here.
             expense.Date = date;
+            expense.CategoryId = payload.CategoryId ?? expense.CategoryId;
             expense.OrderCode = income.OrderCode;
             expense.Payee = TextOrNull(payload.Payee);
             expense.OriginScope = TextOrNull(payload.OriginScope);
@@ -127,18 +150,23 @@ namespace Fin.Service.Finance.UseCases.LedgerEntries.Commands.Handlers
             return after;
         }
 
+        /// <summary>Mã hóa đơn đã bỏ khoảng trắng hai đầu; không nhập thì là chuỗi rỗng.</summary>
         private static string InvoiceIdOf(IncomeCostRequest payload) => payload.InvoiceId?.Trim() ?? string.Empty;
 
+        /// <summary>Chuỗi đã bỏ khoảng trắng hai đầu; rỗng thì trả về null.</summary>
         private static string? TextOrNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
-        // The amount typed is what was paid (tax included), kept in the currency it was typed in; the pre-tax part is
-        // derived and the paid sum kept exact.
+        /// <summary>
+        /// Gán số tiền cho khoản chi: số đã gõ là số đã trả (gồm thuế), lưu theo loại tiền đã chọn. Phần trước thuế
+        /// được tính ra từ số đã trả, còn số đã trả giữ đúng như đã gõ.
+        /// </summary>
         private static void SetPaidAmount(LedgerEntry expense, IncomeCostRequest payload)
         {
             expense.CurrencyCode = SalesValues.CurrencyOf(payload.CurrencyCode);
             expense.SetAmounts(LedgerEntry.BeforeTax(payload.Amount, payload.TaxPercent), payload.TaxPercent, payload.Amount);
         }
 
+        /// <summary>Id của loại chi có tên <paramref name="name"/>; chưa có thì tạo mới rồi trả về id.</summary>
         private async Task<long> CostCategoryIdAsync(string name, CancellationToken cancellationToken)
         {
             var existing = await _unitOfWork.CategoryRepository.FindIdByNameAsync(CategoryKinds.Expense, name, cancellationToken);

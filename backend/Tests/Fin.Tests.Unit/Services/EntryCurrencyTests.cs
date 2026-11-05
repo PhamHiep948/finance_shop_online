@@ -6,7 +6,9 @@ using Fin.Service.Finance.UseCases.LedgerEntries.Validators;
 
 namespace Fin.Tests.Unit.Services
 {
-    // Amounts are stored in the currency they were typed in (EUR stays EUR), never converted to USD first.
+    /// <summary>
+    /// Kiểm tra số tiền được lưu theo đúng loại tiền người dùng chọn (gõ EUR lưu EUR), không quy sang USD trước khi lưu.
+    /// </summary>
     public sealed class EntryCurrencyTests
     {
         private static LedgerEntryRequest Request(decimal amount, string? currency) => new()
@@ -34,7 +36,7 @@ namespace Fin.Tests.Unit.Services
         }
 
         [Fact]
-        public void Same_number_in_another_currency_does_not_keep_the_old_after_tax_amount()
+        public void Changing_only_the_currency_keeps_the_typed_numbers()
         {
             var entry = new LedgerEntry();
             LedgerEntryAssembler.Apply(entry, Request(16.81m, "USD"));
@@ -43,7 +45,8 @@ namespace Fin.Tests.Unit.Services
             LedgerEntryAssembler.Apply(entry, Request(16.81m, "EUR"));
 
             Assert.Equal("EUR", entry.CurrencyCode);
-            Assert.Equal(20.00m, entry.AmountAfterTax);
+            Assert.Equal(16.81m, entry.Amount);
+            Assert.Equal(20.01m, entry.AmountAfterTax);
         }
 
         [Theory]

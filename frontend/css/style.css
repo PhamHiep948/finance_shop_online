@@ -4961,6 +4961,12 @@ html[data-theme="dark"] .cell-src-linked { background: rgba(99, 102, 241, .16); 
   border: 0; border-radius: 0; outline: 0; box-shadow: none; background: transparent;
   font: inherit; font-size: 13.5px; color: var(--text-primary);
 }
+.dr-row .dr-value:has(> .cell-editor-ccy) { position: relative; }
+.dr-row .dr-value:has(> .cell-editor-ccy) .cell-editor { padding-right: 52px; }
+.cell-editor-ccy {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  font-size: 12px; font-weight: 600; color: var(--text-secondary); pointer-events: none;
+}
 .dr-row textarea.cell-editor { min-height: 96px; padding: 10px 12px; resize: vertical; line-height: 1.5; }
 .dr-row.is-multiline:focus-within { align-items: stretch; }
 td .cell-editor {
